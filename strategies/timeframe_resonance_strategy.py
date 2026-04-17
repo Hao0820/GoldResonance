@@ -20,9 +20,10 @@ class TimeframeResonanceStrategy(BaseStrategy):
 
 
     def calculate_indicators(self, df):
-        # 在沙盒模擬中，我們需要即時更新軌道以產生「跳動感」
-        # 即使預算列已存在，重新計算當前切片（如 100 筆）的效能影響極低
-        pass
+        # 在「快速結束」模式下，為了追求極限效能，直接使用預算好的指標
+        # 在「正常模式」下，則跳過此判斷，進入下方重新計算邏輯以產生「跳動感」
+        if getattr(self.connector, 'skip_to_end', False) and 'bb_h' in df.columns:
+            return df
 
             
         # 1. Bollinger Bands (校準為 21, 2.1)

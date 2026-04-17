@@ -44,6 +44,7 @@ class SandboxEngine:
 
         for i in range(self.current_idx, len(all_times)):
             self.current_idx = i # 實時紀錄索引，支援暫停後接續
+            self.connector._current_m1_idx = i # 🚀 讓 Data Provider 知道當前索引，切換至 Numpy 極速模式
             
             if not gui.running:
                 break

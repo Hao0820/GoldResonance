@@ -58,7 +58,7 @@ def train():
         logging.error("找不到 ml_dataset.csv，請先執行 create_dataset.py")
         return
         
-    # 定義特徵欄位 (必須與 create_dataset.py 一致)
+    # 定義特徵欄位 (必須與 create_dataset.py 一致，共 37 維度)
     features = [
         'm5_ema_slope', 'm5_rsi_14', 'm5_atr_14', 
         'body_size', 'upper_shadow', 'lower_shadow', 'body_ratio',
@@ -68,7 +68,10 @@ def train():
         'm5_adx', 'm5_macd_hist', 'm5_cci', 'm5_bb_width',
         'prev_body_size', 'prev_close_change',
         'is_us_session', 'is_asia_session', 'h1_trend', 'h4_trend', 'd1_rsi',
-        'm30_rsi', 'm30_trend', 'm1_momentum'
+        'm30_rsi', 'm30_trend', 'm1_momentum',
+        # 新增高品質特徵 (+6)
+        'volume_ratio', 'spread', 'session_overlap',
+        'rsi_divergence', 'price_vs_vwap', 'pattern_engulf',
     ]
     
     X = df[features]

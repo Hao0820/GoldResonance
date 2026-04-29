@@ -57,16 +57,18 @@ def export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M5, tf_name="M5", month
 
 if __name__ == "__main__":
     import time
-    # 匯出 M1 (用於精確回測)
-    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M1, tf_name="M1", months_back=3)
-    # 匯出 M5, M15, M30, H1
-    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M5, tf_name="M5", months_back=3)
-    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M15, tf_name="M15", months_back=3)
-    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M30, tf_name="M30", months_back=3)
-    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_H1, tf_name="H1", months_back=6)
-    # 匯出 H4 與 D1 (大趨勢背景)
-    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_H4, tf_name="H4", months_back=12)
-    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_D1, tf_name="D1", months_back=12)
+    # XAUUSD 全時區 (改為 3 年歷史，讓模型見過更多市場型態)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M1,  tf_name="M1",  months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M5,  tf_name="M5",  months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M15, tf_name="M15", months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M30, tf_name="M30", months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_H1,  tf_name="H1",  months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_H4,  tf_name="H4",  months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_D1,  tf_name="D1",  months_back=36)
+    
+    # EURUSD 作為 DXY 代理指標 (DXY = -(EURUSD direction), 相關ɾ-87%)
+    export_data(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M5,  tf_name="M5",  months_back=36)
+    export_data(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M30, tf_name="M30", months_back=36)
     
     mt5.shutdown()
     logging.info("匯出完成！")

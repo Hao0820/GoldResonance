@@ -184,8 +184,51 @@ class MLResonanceStrategy(BaseStrategy):
         m1_ema_5 = ta.trend.EMAIndicator(m1_df['close'], window=5).ema_indicator()
         m1_momentum = m1_ema_5.iloc[-1] - m1_ema_5.iloc[-2]
 
-        # 打包成特徵陣列 (共 32 維度)
+        # ===== 新增 6 個高品質即時特徵 =====
+        # 1. 成交量比率
+        vol_ma20 = m5_df['tick_volume'].rolling(20).mean().iloc[-1]
+        volume_ratio = float(m5_live['tick_volume']) / (vol_ma20 + 1)
+        
+        # 2. 點差
+        if 'spread' in m5_df.columns:
+            spread_val = float(m5_live['spread'])
+        else:
+            spread_val = (m5_live['high'] - m5_live['low']) / (m5_atr + 0.001)
+        
+        # 3. 歐美盤重疊時段
+        session_overlap = 1 if 13 <= hour <= 17 else 0
+        
+        # 4. RSI 背離
+        rsi_series = ta.momentum.RSIIndicator(close=m5_df['close'], window=14).rsi()
+        rsi_prev5   = rsi_series.iloc[-6] if len(rsi_series) >= 6 else rsi_series.iloc[-1]
+        price_prev5 = m5_df['close'].iloc[-6] if len(m5_df) >= 6 else m5_df['close'].iloc[-1]
+        if m5_live['close'] > price_prev5 and m5_rsi <= rsi_prev5:
+            rsi_divergence = -1.0
+        elif m5_live['close'] < price_prev5 and m5_rsi >= rsi_prev5:
+            rsi_divergence = 1.0
+        else:
+            rsi_divergence = 0.0
+        
+        # 5. 價格與 VWAP 的距離
+        typical_price = (m5_df['high'] + m5_df['low'] + m5_df['close']) / 3
+        vwap = (typical_price * m5_df['tick_volume']).rolling(20).sum().iloc[-1] / \
+               (m5_df['tick_volume'].rolling(20).sum().iloc[-1] + 1)
+        price_vs_vwap = m5_live['close'] - vwap
+        
+        # 6. 吞噬型 K 棒
+        prev2_open  = m5_df['open'].iloc[-2]
+        prev2_close = m5_df['close'].iloc[-2]
+        prev2_body  = prev2_close - prev2_open
+        if body_size > 0 and prev2_body < 0 and m5_live['close'] > prev2_open and m5_live['open'] < prev2_close:
+            pattern_engulf = 1.0
+        elif body_size < 0 and prev2_body > 0 and m5_live['close'] < prev2_open and m5_live['open'] > prev2_close:
+            pattern_engulf = -1.0
+        else:
+            pattern_engulf = 0.0
+
+        # 打包成特徵陣列 (共 37 維度)
         features = pd.DataFrame([{
+
             'm5_ema_slope': m5_ema_slope, 'm5_rsi_14': m5_rsi, 'm5_atr_14': m5_atr,
             'body_size': body_size, 'upper_shadow': upper_shadow, 'lower_shadow': lower_shadow, 'body_ratio': body_ratio,
             'hour': hour, 'day_of_week': day_of_week,
@@ -194,7 +237,10 @@ class MLResonanceStrategy(BaseStrategy):
             'm5_adx': m5_adx, 'm5_macd_hist': m5_macd_hist, 'm5_cci': m5_cci, 'm5_bb_width': m5_bb_width,
             'prev_body_size': prev_body_size, 'prev_close_change': prev_close_change,
             'is_us_session': is_us_session, 'is_asia_session': is_asia_session, 'h1_trend': h1_trend, 'h4_trend': h4_trend, 'd1_rsi': d1_rsi,
-            'm30_rsi': m30_rsi, 'm30_trend': m30_trend, 'm1_momentum': m1_momentum
+            'm30_rsi': m30_rsi, 'm30_trend': m30_trend, 'm1_momentum': m1_momentum,
+            # 新增高品質特徵 (+6)
+            'volume_ratio': volume_ratio, 'spread': spread_val, 'session_overlap': session_overlap,
+            'rsi_divergence': rsi_divergence, 'price_vs_vwap': price_vs_vwap, 'pattern_engulf': pattern_engulf,
         }])
         
         # AI 預測 (取得勝率 Probability)

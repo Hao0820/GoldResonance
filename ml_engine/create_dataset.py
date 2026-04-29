@@ -48,9 +48,45 @@ def create_dataset():
     df_m5['lower_shadow'] = np.minimum(df_m5['open'], df_m5['close']) - df_m5['low']
     df_m5['body_ratio'] = df_m5['body_size'] / (df_m5['high'] - df_m5['low'] + 0.0001)
     
-    # 時間特徵 (讓 AI 知道現在是亞洲盤、歐洲盤還是美洲盤)
+    # 時間特徵
     df_m5['hour'] = df_m5['time'].dt.hour
     df_m5['day_of_week'] = df_m5['time'].dt.dayofweek
+
+    # ===== 新增 6 個高品質特徵 =====
+    
+    # 1. 成交量比率 (>2 代表機構異常進場)
+    vol_ma20 = df_m5['tick_volume'].rolling(20).mean()
+    df_m5['volume_ratio'] = df_m5['tick_volume'] / (vol_ma20 + 1)
+    
+    # 2. 點差大小 (MT5 OHLCV 有內建 spread 欄位)
+    if 'spread' in df_m5.columns:
+        df_m5['spread'] = df_m5['spread'].astype(float)
+    else:
+        # Fallback: 用 ATR 較正規化的高低差作代理
+        df_m5['spread'] = (df_m5['high'] - df_m5['low']) / (df_m5['m5_atr_14'] + 0.001)
+    
+    # 3. 歐美盤重疊時段 (13:00-17:00 UTC，流動性最強)
+    df_m5['session_overlap'] = df_m5['hour'].apply(lambda x: 1 if 13 <= x <= 17 else 0)
+    
+    # 4. RSI 背離 (價格創新高但 RSI 沒跟上 = 看空)
+    price_new_high = df_m5['close'] > df_m5['close'].shift(5)
+    rsi_new_high   = df_m5['m5_rsi_14'] > df_m5['m5_rsi_14'].shift(5)
+    price_new_low  = df_m5['close'] < df_m5['close'].shift(5)
+    rsi_new_low    = df_m5['m5_rsi_14'] < df_m5['m5_rsi_14'].shift(5)
+    df_m5['rsi_divergence'] = np.where(price_new_high & ~rsi_new_high, -1,
+                              np.where(price_new_low  & ~rsi_new_low,   1, 0)).astype(float)
+    
+    # 5. 價格跟 VWAP 的距離 (量价平均價格代理)
+    typical_price = (df_m5['high'] + df_m5['low'] + df_m5['close']) / 3
+    vwap = (typical_price * df_m5['tick_volume']).rolling(20).sum() / df_m5['tick_volume'].rolling(20).sum()
+    df_m5['price_vs_vwap'] = df_m5['close'] - vwap
+    
+    # 6. 吞噬型 K 棒型態 (看多吞噬=+1, 看空吞噬=-1)
+    prev_body = df_m5['body_size'].shift(1)
+    curr_body = df_m5['body_size']
+    bullish_engulf = (curr_body > 0) & (prev_body < 0) & (df_m5['close'] > df_m5['open'].shift(1)) & (df_m5['open'] < df_m5['close'].shift(1))
+    bearish_engulf = (curr_body < 0) & (prev_body > 0) & (df_m5['close'] < df_m5['open'].shift(1)) & (df_m5['open'] > df_m5['close'].shift(1))
+    df_m5['pattern_engulf'] = np.where(bullish_engulf, 1, np.where(bearish_engulf, -1, 0)).astype(float)
 
     # 合併 M15 到 M5 (Forward Fill)
     m15_features = ['time', 'm15_dist_h', 'm15_dist_l', 'm15_dist_m', 'm15_ema_slope']
@@ -157,7 +193,7 @@ def create_dataset():
     # --- 清理並選擇欄位 ---
     df = df.dropna().reset_index(drop=True)
     
-    # 終極全時區特徵清單 (32維度)
+    # 終極全時區特徵清單 (38 維度)
     feature_cols = [
         'm5_ema_slope', 'm5_rsi_14', 'm5_atr_14', 
         'body_size', 'upper_shadow', 'lower_shadow', 'body_ratio',
@@ -167,7 +203,10 @@ def create_dataset():
         'm5_adx', 'm5_macd_hist', 'm5_cci', 'm5_bb_width',
         'prev_body_size', 'prev_close_change',
         'is_us_session', 'is_asia_session', 'h1_trend', 'h4_trend', 'd1_rsi',
-        'm30_rsi', 'm30_trend', 'm1_momentum'
+        'm30_rsi', 'm30_trend', 'm1_momentum',
+        # 新增高品質特徵 (+6)
+        'volume_ratio', 'spread', 'session_overlap',
+        'rsi_divergence', 'price_vs_vwap', 'pattern_engulf',
     ]
     
     dataset = df[feature_cols + ['label_buy', 'label_sell', 'time', 'close']].copy()

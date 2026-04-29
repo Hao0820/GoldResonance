@@ -3,6 +3,9 @@ from tkinter import ttk, scrolledtext, messagebox
 import logging
 import threading
 import time
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,9 @@ class TradingApp(tk.Tk):
         
         self.btn_stop = ttk.Button(self.control_frame, text="⏹ 停止 EA", command=self.on_stop, state=tk.DISABLED)
         self.btn_stop.pack(side=tk.LEFT, padx=8)
+        
+        self.btn_retrain = ttk.Button(self.control_frame, text="🔄 重訓模型", command=self.on_retrain)
+        self.btn_retrain.pack(side=tk.LEFT, padx=8)
         
         self.lbl_status = ttk.Label(self.control_frame, text="連線狀態: 🔴 已斷線", foreground=self.RED_ACC, font=('Segoe UI', 11, 'bold'))
         self.lbl_status.pack(side=tk.RIGHT, padx=10)
@@ -248,6 +254,25 @@ class TradingApp(tk.Tk):
         self.running = False
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
+
+    def on_retrain(self):
+        self.btn_retrain.config(state=tk.DISABLED, text="⏳ 重訓中...")
+        logging.info("🔄 開始 AI 模型重訓流程，這可能需要數分鐘...")
+        threading.Thread(target=self._retrain_task, daemon=True).start()
+
+    def _retrain_task(self):
+        try:
+            from ml_engine.evolve_brain import evolve
+            evolve()
+            # 重訓完成後，重新載入所有策略的模型
+            for strat in self.engine.strategies:
+                if hasattr(strat, 'reload_models'):
+                    strat.reload_models()
+            self.after(0, lambda: logging.info("🚀 模型重訓並重載完成！最新大腦已上線。"))
+        except Exception as e:
+            self.after(0, lambda: logging.error(f"❌ 重訓失敗: {e}"))
+        finally:
+            self.after(0, lambda: self.btn_retrain.config(state=tk.NORMAL, text="🔄 重訓模型"))
         
     def on_closing(self):
         self.running = False

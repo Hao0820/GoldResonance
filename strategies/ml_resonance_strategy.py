@@ -57,6 +57,12 @@ class MLResonanceStrategy(BaseStrategy):
             self.status = "❌ AI 模型缺失"
             self.models_loaded = False
 
+    def reload_models(self):
+        logger.info("🔄 開始重新載入 AI 模型...")
+        self._load_models()
+        if self.models_loaded:
+            logger.info("✅ AI 模型重載完成！新大腦已上線。")
+
     def get_data(self):
         # 取得全時區數據 (M1, M5, M15, M30, H1, H4, D1)
         m1_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_M1, 60)

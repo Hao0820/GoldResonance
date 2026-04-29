@@ -68,3 +68,27 @@ class MT5Connector:
         if info:
             return info._asdict()
         return None
+
+    def get_daily_pnl(self):
+        """獲取今日(00:00開始)的已實現盈虧與當前浮動盈虧"""
+        if not self.connected:
+            return 0.0, 0.0, 0.0
+            
+        # 1. 計算今日已實現盈虧 (從今日凌晨開始)
+        now = datetime.now()
+        start_of_day = datetime(now.year, now.month, now.day)
+        
+        deals = mt5.history_deals_get(start_of_day, now)
+        realized_pnl = 0.0
+        if deals is not None and len(deals) > 0:
+            for d in deals:
+                # 只有平倉交易 (Entry Out 或 In/Out) 才計入已實現盈虧
+                # 或者直接加總 profit, commission, swap，MT5 會自動處理
+                realized_pnl += (d.profit + d.commission + d.swap)
+        
+        # 2. 獲取當前持倉的浮動盈虧
+        account = mt5.account_info()
+        floating_pnl = account.profit if account else 0.0
+        
+        total_pnl = realized_pnl + floating_pnl
+        return realized_pnl, floating_pnl, total_pnl

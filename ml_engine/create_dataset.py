@@ -103,11 +103,13 @@ def create_dataset():
     df['m5_dist_m'] = df['close'] - df['m5_bb_m']
     df['m5_dist_ema'] = df['close'] - df['m5_ema_12']
     
-    # 生成標籤 Labels (往未來探索 60 根 K 棒 = 5 小時)
-    logging.info("生成預測標籤 (Labels)...")
-    tp_dist = 7.0
-    sl_dist = 4.0
-    look_forward = 60
+    # 生成動態標籤 Labels (使用 ATR 作為波動度參考)
+    logging.info("生成動態波動度標籤 (ATR-based Labels)...")
+    
+    # TP = 2.0x ATR, SL = 1.2x ATR (這是為了確保良好的賺賠比)
+    tp_mult = 2.0
+    sl_mult = 1.2
+    look_forward = 60 # 探索未來 5 小時 (M5 * 60)
     
     label_buy = np.zeros(len(df))
     label_sell = np.zeros(len(df))
@@ -115,28 +117,37 @@ def create_dataset():
     highs = df['high'].values
     lows = df['low'].values
     closes = df['close'].values
+    atrs = df['m5_atr_14'].values
     
     for i in range(len(df) - look_forward):
         entry_price = closes[i]
+        curr_atr = atrs[i]
         
-        # 判斷多單結果
-        buy_tp = entry_price + tp_dist
-        buy_sl = entry_price - sl_dist
+        # 如果 ATR 異常小 (數據缺失或極端行情)，跳過
+        if curr_atr <= 0: continue
+        
+        # 計算此時此刻的動態目標
+        dynamic_tp = curr_atr * tp_mult
+        dynamic_sl = curr_atr * sl_mult
+        
+        # 判斷多單結果 (看未來 60 根 K 棒，誰先被觸發)
+        buy_tp = entry_price + dynamic_tp
+        buy_sl = entry_price - dynamic_sl
         for j in range(i + 1, i + look_forward):
             if lows[j] <= buy_sl:
-                break # 失敗
+                break # 先碰到止損，失敗
             if highs[j] >= buy_tp:
-                label_buy[i] = 1 # 成功
+                label_buy[i] = 1 # 成功達標
                 break
                 
         # 判斷空單結果
-        sell_tp = entry_price - tp_dist
-        sell_sl = entry_price + sl_dist
+        sell_tp = entry_price - dynamic_tp
+        sell_sl = entry_price + dynamic_sl
         for j in range(i + 1, i + look_forward):
             if highs[j] >= sell_sl:
-                break # 失敗
+                break # 先碰到止損，失敗
             if lows[j] <= sell_tp:
-                label_sell[i] = 1 # 成功
+                label_sell[i] = 1 # 成功達標
                 break
                 
     df['label_buy'] = label_buy

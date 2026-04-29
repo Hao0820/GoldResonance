@@ -264,22 +264,23 @@ class MLResonanceStrategy(BaseStrategy):
         final_buy_prob = self.stack_buy.predict_proba(meta_b)[0][1]
         final_sell_prob = self.stack_sell.predict_proba(meta_s)[0][1]
         
-        # 3. 分配給 Model A 與 Model B
-        # 現在兩者都使用最強的集成勝率
+        # 3. 分配得分
+        # 模型 A: 使用最新「集成主審」預測 (Stacking)
         model_A_buy_score = final_buy_prob
         model_A_sell_score = final_sell_prob
         
-        model_B_buy_score = final_buy_prob
-        model_B_sell_score = final_sell_prob
+        # 模型 B: 使用「傳統穩健」預測 (10% XGB + 90% RF)
+        model_B_buy_score = (p_xgb_b * 0.1) + (p_rf_b * 0.9)
+        model_B_sell_score = (p_xgb_s * 0.1) + (p_rf_s * 0.9)
         
-        # 4. 決策與執行 (高勝率模式：門檻均設為 0.70)
-        # 模型 A 門檻
+        # 4. 決策與執行 (進場門檻均為 0.70)
+        # 模型 A 決策
         if model_A_buy_score > 0.70:
             self._execute_trade(mt5.ORDER_TYPE_BUY, self.lot_size_A, "Model_A_Buy")
         elif model_A_sell_score > 0.70:
             self._execute_trade(mt5.ORDER_TYPE_SELL, self.lot_size_A, "Model_A_Sell")
             
-        # 模型 B 門檻 (原本較嚴格，現在同步為高勝率門檻)
+        # 模型 B 決策
         if model_B_buy_score > 0.70:
             self._execute_trade(mt5.ORDER_TYPE_BUY, self.lot_size_B, "Model_B_Buy")
         elif model_B_sell_score > 0.70:

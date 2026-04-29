@@ -39,18 +39,22 @@ class MLResonanceStrategy(BaseStrategy):
     def _load_models(self):
         base_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
         try:
+            # 載入所有集成專家
             self.xgb_buy = joblib.load(os.path.join(base_path, 'xgb_buy.pkl'))
-            self.rf_buy = joblib.load(os.path.join(base_path, 'rf_buy.pkl'))
+            self.lgb_buy = joblib.load(os.path.join(base_path, 'lgb_buy.pkl'))
+            self.rf_buy  = joblib.load(os.path.join(base_path, 'rf_buy.pkl'))
+            self.stack_buy = joblib.load(os.path.join(base_path, 'stack_buy.pkl'))
+            
             self.xgb_sell = joblib.load(os.path.join(base_path, 'xgb_sell.pkl'))
-            self.rf_sell = joblib.load(os.path.join(base_path, 'rf_sell.pkl'))
+            self.lgb_sell = joblib.load(os.path.join(base_path, 'lgb_sell.pkl'))
+            self.rf_sell  = joblib.load(os.path.join(base_path, 'rf_sell.pkl'))
+            self.stack_sell = joblib.load(os.path.join(base_path, 'stack_sell.pkl'))
             
-            # 強制將預測執行緒設為 1，解決 Parallels 虛擬機中的 joblib 平行運算警告
-            self.xgb_buy.n_jobs = 1
-            self.rf_buy.n_jobs = 1
-            self.xgb_sell.n_jobs = 1
-            self.rf_sell.n_jobs = 1
+            # 效能優化 (多執行緒設為 1)
+            for m in [self.xgb_buy, self.lgb_buy, self.rf_buy, self.xgb_sell, self.lgb_sell, self.rf_sell]:
+                if hasattr(m, 'n_jobs'): m.n_jobs = 1
             
-            self.status = "🧠 AI 大腦運轉中 (XGB+RF)"
+            self.status = "🧠 集成大腦運轉中 (XGB+LGB+RF+Stacking)"
             self.models_loaded = True
         except Exception as e:
             logger.error(f"模型載入失敗: {e}")
@@ -243,22 +247,30 @@ class MLResonanceStrategy(BaseStrategy):
             'rsi_divergence': rsi_divergence, 'price_vs_vwap': price_vs_vwap, 'pattern_engulf': pattern_engulf,
         }])
         
-        # AI 預測 (取得勝率 Probability)
-        # XGBoost 和 Random Forest 的 predict_proba 返回 [敗率, 勝率]
-        xgb_buy_prob = self.xgb_buy.predict_proba(features)[0][1]
-        rf_buy_prob = self.rf_buy.predict_proba(features)[0][1]
+        # --- 多專家集成預測 (XGB + LGB + RF + Stacking) ---
+        # 1. 取得各專家的初步勝率
+        p_xgb_b = self.xgb_buy.predict_proba(features)[0][1]
+        p_lgb_b = self.lgb_buy.predict_proba(features)[0][1]
+        p_rf_b  = self.rf_buy.predict_proba(features)[0][1]
         
-        xgb_sell_prob = self.xgb_sell.predict_proba(features)[0][1]
-        rf_sell_prob = self.rf_sell.predict_proba(features)[0][1]
+        p_xgb_s = self.xgb_sell.predict_proba(features)[0][1]
+        p_lgb_s = self.lgb_sell.predict_proba(features)[0][1]
+        p_rf_s  = self.rf_sell.predict_proba(features)[0][1]
         
-        # 綜合預測勝率
-        # 模型 A: XGB 100% (追求利潤極大化)
-        model_A_buy_score = xgb_buy_prob
-        model_A_sell_score = xgb_sell_prob
+        # 2. 由 Stacker (主審) 進行最終裁決
+        meta_b = np.column_stack([[p_xgb_b, p_lgb_b, p_rf_b]])
+        meta_s = np.column_stack([[p_xgb_s, p_lgb_s, p_rf_s]])
         
-        # 模型 B: RF 90% / XGB 10% (追求勝率極大化)
-        model_B_buy_score = (xgb_buy_prob * 0.1) + (rf_buy_prob * 0.9)
-        model_B_sell_score = (xgb_sell_prob * 0.1) + (rf_sell_prob * 0.9)
+        final_buy_prob = self.stack_buy.predict_proba(meta_b)[0][1]
+        final_sell_prob = self.stack_sell.predict_proba(meta_s)[0][1]
+        
+        # 3. 分配給 Model A 與 Model B
+        # 現在兩者都使用最強的集成勝率
+        model_A_buy_score = final_buy_prob
+        model_A_sell_score = final_sell_prob
+        
+        model_B_buy_score = final_buy_prob
+        model_B_sell_score = final_sell_prob
         
         # 儲存供 UI 讀取
         self.model_a_buy = model_A_buy_score

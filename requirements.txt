@@ -3,5 +3,7 @@ pandas
 numpy
 ta
 xgboost
+lightgbm
+optuna
 scikit-learn
 joblib

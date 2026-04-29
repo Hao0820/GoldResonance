@@ -15,18 +15,22 @@ from .base_strategy import BaseStrategy
 logger = logging.getLogger(__name__)
 
 class MLResonanceStrategy(BaseStrategy):
-    def __init__(self, name="ML_Resonance_AI", symbol="XAUUSD", lot_size=0.1):
+    def __init__(self, name="ML_Resonance_AI", symbol="XAUUSD", lot_size=0.1, trade_tracker=None):
         super().__init__(name)
         self.symbol = symbol
         self.lot_size = lot_size
-        self.max_positions = 1
-        self.magic_number = 88005 # AI 專屬 Magic Number
-        self.status = "🧠 AI 模型載入中..."
-        self.last_signal_time = None
-        self.sl_dist = 4.0
-        self.tp_dist = 7.0
-        self.xgb_weight = 0.7
-        self.rf_weight = 0.3
+        self.max_positions = 2  # 允許兩個模型各自持倉
+        self.magic_number_A = 88001 # 模型A (利潤極大化)
+        self.magic_number_B = 88002 # 模型B (勝率極大化)
+        self.status = "雙引擎 AI 載入中..."
+        self.model_a_buy = 0.0
+        self.model_a_sell = 0.0
+        self.model_b_buy = 0.0
+        self.model_b_sell = 0.0
+        self.last_signal_time_A = None
+        self.last_signal_time_B = None
+        self.trade_tracker = trade_tracker
+        self.tick_counter = 0
         
         # 載入模型
         self._load_models()
@@ -173,7 +177,7 @@ class MLResonanceStrategy(BaseStrategy):
         m1_ema_5 = ta.trend.EMAIndicator(m1_df['close'], window=5).ema_indicator()
         m1_momentum = m1_ema_5.iloc[-1] - m1_ema_5.iloc[-2]
 
-        # 打包成特徵陣列 (必須與訓練時的順序一模一樣，共 32 維度)
+        # 打包成特徵陣列 (共 32 維度)
         features = pd.DataFrame([{
             'm5_ema_slope': m5_ema_slope, 'm5_rsi_14': m5_rsi, 'm5_atr_14': m5_atr,
             'body_size': body_size, 'upper_shadow': upper_shadow, 'lower_shadow': lower_shadow, 'body_ratio': body_ratio,
@@ -194,34 +198,73 @@ class MLResonanceStrategy(BaseStrategy):
         xgb_sell_prob = self.xgb_sell.predict_proba(features)[0][1]
         rf_sell_prob = self.rf_sell.predict_proba(features)[0][1]
         
-        # 綜合預測勝率 (Ensemble) - 使用動態權重
-        buy_score = (xgb_buy_prob * self.xgb_weight) + (rf_buy_prob * self.rf_weight)
-        sell_score = (xgb_sell_prob * self.xgb_weight) + (rf_sell_prob * self.rf_weight)
+        # 綜合預測勝率
+        # 模型 A: XGB 100% (追求利潤極大化)
+        model_A_buy_score = xgb_buy_prob
+        model_A_sell_score = xgb_sell_prob
+        
+        # 模型 B: RF 90% / XGB 10% (追求勝率極大化)
+        model_B_buy_score = (xgb_buy_prob * 0.1) + (rf_buy_prob * 0.9)
+        model_B_sell_score = (xgb_sell_prob * 0.1) + (rf_sell_prob * 0.9)
+        
+        # 儲存供 UI 讀取
+        self.model_a_buy = model_A_buy_score
+        self.model_a_sell = model_A_sell_score
+        self.model_b_buy = model_B_buy_score
+        self.model_b_sell = model_B_sell_score
         
         # 更新 UI 狀態
-        self.status = f"🧠 AI 預測勝率 | 多單: {buy_score*100:.1f}% | 空單: {sell_score*100:.1f}% (XGB:{self.xgb_weight*100:.0f}%)"
+        self.status = "市場掃描中"
         
-        # 下單邏輯
         if not can_execute_new_trades: return
-        if self.last_signal_time == m5_live['time']: return
         
         positions = mt5.positions_get(symbol=self.symbol)
-        pos_count = len([p for p in positions if str(p.magic).startswith(str(self.magic_number))]) if positions else 0
-        if pos_count >= self.max_positions: return
+        pos_A_count = len([p for p in positions if p.magic == self.magic_number_A]) if positions else 0
+        pos_B_count = len([p for p in positions if p.magic == self.magic_number_B]) if positions else 0
+
+        # === 執行模型 A (利潤極大化) ===
+        # 配置: Threshold=0.60, TP=10.0, SL=8.0
+        if pos_A_count == 0 and self.last_signal_time_A != m5_live['time']:
+            if model_A_buy_score >= 0.60 and model_A_buy_score > model_A_sell_score:
+                sl, tp = ask - 8.0, ask + 10.0
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size, ask, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
+                if res:
+                    logger.info(f"🚀 [模型 A - 利潤引擎] 多單進場 @ {ask:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_A_buy_score*100:.1f}% | Ticket: {res.order}")
+                    if self.trade_tracker:
+                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "BUY", self.lot_size, ask, sl, tp)
+                self.last_signal_time_A = m5_live['time']
+                
+            elif model_A_sell_score >= 0.60 and model_A_sell_score > model_A_buy_score:
+                sl, tp = bid + 8.0, bid - 10.0
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size, bid, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
+                if res:
+                    logger.info(f"🚀 [模型 A - 利潤引擎] 空單進場 @ {bid:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_A_sell_score*100:.1f}% | Ticket: {res.order}")
+                    if self.trade_tracker:
+                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "SELL", self.lot_size, bid, sl, tp)
+                self.last_signal_time_A = m5_live['time']
+
+        # === 執行模型 B (勝率極大化) ===
+        # 配置: Threshold=0.65, TP=5.0, SL=8.0
+        if pos_B_count == 0 and self.last_signal_time_B != m5_live['time']:
+            if model_B_buy_score >= 0.65 and model_B_buy_score > model_B_sell_score:
+                sl, tp = ask - 8.0, ask + 5.0
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size, ask, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
+                if res:
+                    logger.info(f"🎯 [模型 B - 勝率引擎] 多單進場 @ {ask:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_B_buy_score*100:.1f}% | Ticket: {res.order}")
+                    if self.trade_tracker:
+                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "BUY", self.lot_size, ask, sl, tp)
+                self.last_signal_time_B = m5_live['time']
+                
+            elif model_B_sell_score >= 0.65 and model_B_sell_score > model_B_buy_score:
+                sl, tp = bid + 8.0, bid - 5.0
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size, bid, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
+                if res:
+                    logger.info(f"🎯 [模型 B - 勝率引擎] 空單進場 @ {bid:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_B_sell_score*100:.1f}% | Ticket: {res.order}")
+                    if self.trade_tracker:
+                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "SELL", self.lot_size, bid, sl, tp)
+                self.last_signal_time_B = m5_live['time']
         
-        # 設定極高的 AI 勝率門檻 (例如 65% 以上才下單，結合 XGBoost 與 Random Forest 的判斷)
-        THRESHOLD = 0.65
-        
-        if buy_score > THRESHOLD and buy_score > sell_score:
-            sl, tp = ask - self.sl_dist, ask + self.tp_dist
-            logger.info(f"🚀 AI 發起多單進場! (預測勝率: {buy_score*100:.1f}%)")
-            self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size, ask, sl, tp, comment=f"AI-BUY-{buy_score:.2f}", magic=self.magic_number)
-            self.last_signal_time = m5_live['time']
-            return
-            
-        if sell_score > THRESHOLD and sell_score > buy_score:
-            sl, tp = bid + self.sl_dist, bid - self.tp_dist
-            logger.info(f"🚀 AI 發起空單進場! (預測勝率: {sell_score*100:.1f}%)")
-            self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size, bid, sl, tp, comment=f"AI-SELL-{sell_score:.2f}", magic=self.magic_number)
-            self.last_signal_time = m5_live['time']
-            return
+        # 每 10 個 tick 更新一次 CSV 紀錄
+        self.tick_counter += 1
+        if self.tick_counter % 10 == 0 and self.trade_tracker:
+            self.trade_tracker.update_closed_trades(self.connector)

@@ -1,7 +1,6 @@
 import logging
 import warnings
 
-# 隱藏 scikit-learn 與 joblib 的並行運算警告
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 warnings.filterwarnings("ignore", category=UserWarning, module="joblib")
 from core.mt5_connector import MT5Connector
@@ -11,9 +10,9 @@ from ui.app_gui import TradingApp
 
 
 from strategies.ml_resonance_strategy import MLResonanceStrategy
+from core.trade_tracker import TradeTracker
 
 def main():
-    # 確保不會再有任何訊息印到終端機 (黑色視窗) 裡，全部導向 GUI
     root_logger = logging.getLogger()
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
@@ -23,8 +22,8 @@ def main():
     executor = ExecutionManager(connector)
     engine = StrategyEngine(connector, executor)
     
-    # Register Strategies into Hub
-    ml_ai = MLResonanceStrategy(name="AI全自動交易(XGB+RF)", symbol="XAUUSD")
+    tracker = TradeTracker()
+    ml_ai = MLResonanceStrategy(name="雙引擎 AI (A/B模型)", symbol="XAUUSD", trade_tracker=tracker)
     engine.add_strategy(ml_ai)
     
     # Start GUI

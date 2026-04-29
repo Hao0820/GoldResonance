@@ -99,22 +99,7 @@ class TradingApp(tk.Tk):
         self.ent_lots.insert(0, str(getattr(self.engine.strategies[0], 'lot_size', 0.1)) if self.engine.strategies else "0.1")
         self.ent_lots.pack(side=tk.LEFT, padx=5)
         
-        # --- AI Weights Slider (直覺滑桿設計) ---
-        self.lbl_weights = ttk.Label(self.control_frame, text="🧠 XGB: 70% | RF: 30%", font=('Segoe UI', 9, 'bold'), foreground=self.ACCENT)
-        self.lbl_weights.pack(side=tk.LEFT, padx=(20, 5))
-        
-        # 使用 ttk.Scale 作為 0-100 的滑桿
-        self.weight_var = tk.DoubleVar(value=70)
-        self.weight_slider = ttk.Scale(
-            self.control_frame, 
-            from_=0, to=100, 
-            orient=tk.HORIZONTAL, 
-            variable=self.weight_var,
-            length=120,
-            command=self.on_slider_change
-        )
-        self.weight_slider.pack(side=tk.LEFT, padx=5)
-        
+        # (權重滑桿已移除，因為現在是雙模型獨立運行)        
         # 手數輸入框自動同步
         self.ent_lots.bind('<Return>', lambda e: self.update_strategy_settings(silent=True))
         self.ent_lots.bind('<FocusOut>', lambda e: self.update_strategy_settings(silent=True))
@@ -138,19 +123,27 @@ class TradingApp(tk.Tk):
         
         self.lbl_balance = ttk.Label(self.info_frame, text="餘額: $0.00", font=('Segoe UI', 12, 'bold'), foreground=self.GREEN_ACC)
         self.lbl_balance.grid(row=0, column=0, sticky=tk.W, padx=10, pady=2)
+        
         self.lbl_equity = ttk.Label(self.info_frame, text="淨值: $0.00", font=('Segoe UI', 12, 'bold'), foreground=self.GREEN_ACC)
         self.lbl_equity.grid(row=0, column=1, sticky=tk.W, padx=10, pady=2)
+        
+        self.lbl_model_A = ttk.Label(self.info_frame, text="[利潤引擎A] 多: 0.0% | 空: 0.0%", font=('Consolas', 11, 'bold'), foreground="#F38BA8")
+        self.lbl_model_A.grid(row=0, column=2, sticky=tk.W, padx=20, pady=2)
+        
         self.lbl_positions = ttk.Label(self.info_frame, text="持倉: 0 筆", font=('Segoe UI', 10, 'bold'), foreground="#BAC2DE")
         self.lbl_positions.grid(row=1, column=0, sticky=tk.W, padx=10, pady=2)
+        
         self.lbl_profit = ttk.Label(self.info_frame, text="未實現: $0.00", font=('Segoe UI', 10, 'bold'), foreground="#BAC2DE")
         self.lbl_profit.grid(row=1, column=1, sticky=tk.W, padx=10, pady=2)
-        self.lbl_daily_pnl = ttk.Label(self.info_frame, text="今日損益: $0.00", font=('Consolas', 11, 'bold'))
-        self.lbl_daily_pnl.grid(row=1, column=2, sticky=tk.W, padx=15, pady=5)
         
-        # --- 數據監控面板 (已移除) ---
-
-        self.lbl_logic_status = ttk.Label(self.info_frame, text="狀態: 等待中", font=('Segoe UI', 9), foreground=self.YELLOW_ACC, wraplength=500, justify=tk.LEFT)
-        self.lbl_logic_status.grid(row=2, column=0, columnspan=3, sticky=tk.W, padx=10, pady=5)
+        self.lbl_model_B = ttk.Label(self.info_frame, text="[勝率引擎B] 多: 0.0% | 空: 0.0%", font=('Consolas', 11, 'bold'), foreground="#89B4FA")
+        self.lbl_model_B.grid(row=1, column=2, sticky=tk.W, padx=20, pady=2)
+        
+        self.lbl_daily_pnl = ttk.Label(self.info_frame, text="今日損益: $0.00", font=('Consolas', 11, 'bold'))
+        self.lbl_daily_pnl.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=10, pady=5)
+        
+        self.lbl_logic_status = ttk.Label(self.info_frame, text="狀態: 等待中", font=('Segoe UI', 10), foreground=self.YELLOW_ACC)
+        self.lbl_logic_status.grid(row=2, column=2, sticky=tk.W, padx=20, pady=5)
 
         # 技术指标监控 (暂時隱藏)
         self.indicator_frame = ttk.LabelFrame(mid_container, text=" 技術指標監控", padding="10")
@@ -205,32 +198,21 @@ class TradingApp(tk.Tk):
         self.anim_frames = ['|', '/', '-', '\\']
         self.anim_idx = 0
                 
-    def on_slider_change(self, event=None):
-        xgb_w = int(self.weight_var.get())
-        rf_w = 100 - xgb_w
-        self.lbl_weights.config(text=f"🧠 XGB: {xgb_w}% | RF: {rf_w}%")
-        self.update_strategy_settings(silent=True)
-
     def update_strategy_settings(self, silent=False):
         """同步介面設定到策略實體"""
         try:
             lots = float(self.ent_lots.get())
-            xgb_w = int(self.weight_var.get())
-            xgb_p = xgb_w / 100.0
-            rf_p = (100 - xgb_w) / 100.0
             
             if lots <= 0: raise ValueError
             
             for strat in self.engine.strategies:
                 strat.lot_size = lots
-                if hasattr(strat, 'xgb_weight'):
-                    strat.xgb_weight = xgb_p
-                    strat.rf_weight = rf_p
             
             if not silent:
-                logging.info(f"✅ 參數同步: 手數={lots}, XGB={xgb_p*100:.0f}%, RF={rf_p*100:.0f}%")
+                logging.info(f"✅ 參數同步: 手數={lots}")
         except ValueError:
-            logging.error("❌ 設定錯誤: 請輸入正確的數值")
+            if not silent:
+                logging.error("❌ 數值格式錯誤，請輸入正數。")
 
     def on_connect(self):
         self.lbl_status.config(text="連線狀態: 🟡 連線中...", foreground="#F9E2AF")
@@ -286,10 +268,7 @@ class TradingApp(tk.Tk):
                 self.lbl_profit.config(text=f"未實現: ${profit:.2f}", foreground=color)
                 
                 realized, floating, total = self.engine.daily_stats
-                if self.engine.risk_management_enabled:
-                    pnl_color = self.GREEN_ACC if total > 0 else (self.RED_ACC if total <= -self.engine.daily_loss_limit else self.YELLOW_ACC)
-                else:
-                    pnl_color = "#BAC2DE"
+                pnl_color = self.GREEN_ACC if total > 0 else (self.RED_ACC if total < 0 else "#BAC2DE")
                 self.lbl_daily_pnl.config(text=f"今日損益: ${total:.2f}", foreground=pnl_color)
 
             # 2. 策略相關數據更新
@@ -317,22 +296,21 @@ class TradingApp(tk.Tk):
                             if 'adx' in objs:
                                 labels["X"].config(text=f"{objs.get('adx', 0):.1f}")
                                 
-                # 狀態列文字更新
-                if hasattr(strat, 'status'):
-                    self.lbl_logic_status.config(text=f"狀態: {strat.status}")
+                # AI 勝率與狀態更新
+                if hasattr(strat, 'model_a_buy') and strat.model_a_buy is not None:
+                    self.lbl_model_A.config(text=f"[利潤引擎A] 多: {strat.model_a_buy*100:4.1f}% | 空: {strat.model_a_sell*100:4.1f}%")
+                    self.lbl_model_B.config(text=f"[勝率引擎B] 多: {strat.model_b_buy*100:4.1f}% | 空: {strat.model_b_sell*100:4.1f}%")
+
+                # (原來的 status 更新已移至下方統一處理)
 
         except Exception as e:
             logger.error(f"UI更新發生錯誤: {e}")
             
         if self.running:
-            status_text = f"正在掃描 {self.anim_frames[self.anim_idx]}\n" + self.engine.get_strategies_status()
-            # 如果熔斷發生且風控開啟，將狀態文字設為紅色
-            if self.engine.risk_management_enabled and self.engine.daily_stats[2] <= -self.engine.daily_loss_limit:
-                status_color = self.RED_ACC
-            else:
-                status_color = self.YELLOW_ACC
-                
-            self.lbl_logic_status.config(text=f"狀態: {status_text}", foreground=status_color)
+            self.anim_idx = (self.anim_idx + 1) % len(self.anim_frames)
+            frame = self.anim_frames[self.anim_idx]
+            
+            self.lbl_logic_status.config(text=f"狀態: 正在掃描 {frame}", foreground=self.YELLOW_ACC)
         else: 
             self.lbl_logic_status.config(text="狀態: 已停止", foreground=self.YELLOW_ACC)
             

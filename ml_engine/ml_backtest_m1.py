@@ -51,9 +51,9 @@ def run_m1_backtest():
     ensemble_buy_probs = (xgb_buy_probs * 0.7) + (rf_buy_probs * 0.3)
     ensemble_sell_probs = (xgb_sell_probs * 0.7) + (rf_sell_probs * 0.3)
     
-    threshold = 0.65  # 回到平衡模式 (兼顧勝率與次數)
-    tp_dist = 7.0
-    sl_dist = 4.0
+    threshold = 0.70  # 嚴格的 70% 信心門檻 (狙擊手模式)
+    tp_dist = 5.0
+    sl_dist = 5.0
     
     def simulate_precision(buy_probs, sell_probs, name):
         balance = 1000.0
@@ -111,10 +111,10 @@ def run_m1_backtest():
                     trades += 1
                     if outcome == 'win':
                         wins += 1
-                        balance += 70.0
+                        balance += 50.0
                     else:
                         losses += 1
-                        balance -= 40.0
+                        balance -= 50.0
                     in_trade_until = exit_time # 冷卻直到這單結束
                 
         win_rate = (wins/trades*100) if trades>0 else 0
@@ -126,7 +126,8 @@ def run_m1_backtest():
 
     print("="*55)
     simulate_precision(xgb_buy_probs, xgb_sell_probs, "方案 A: 100% XGBoost")
-    simulate_precision(ensemble_buy_probs, ensemble_sell_probs, "方案 B: 7:3 綜合比例")
+    simulate_precision(rf_buy_probs, rf_sell_probs, "方案 B: 100% Random Forest")
+    simulate_precision(ensemble_buy_probs, ensemble_sell_probs, "方案 C: 7:3 綜合比例")
     print("="*55)
 
 if __name__ == "__main__":

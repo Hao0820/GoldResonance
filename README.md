@@ -20,11 +20,15 @@ An advanced, fully autonomous algorithmic trading system for MetaTrader 5 (MT5),
    pip install -r requirements.txt
    ```
 2. **Launch MetaTrader 5**: Ensure MT5 is running and logged into your account.
-3. **Start the Engine**:
+3. **Configure Lot Sizes** in `main.py` (default both `0.1`):
+   ```python
+   ml_ai = MLResonanceStrategy(..., lot_size_A=0.1, lot_size_B=0.1, ...)
+   ```
+4. **Start the Engine**:
    ```bash
    python main.py
    ```
-   Connect to MT5 via the GUI, set your lot size, and click **Start**. Both AI engines will begin scanning and trading independently.
+   Connect to MT5 via the GUI. Set **A手數** (Model A — Profit Engine) and **B手數** (Model B — Win-Rate Engine) independently in the control bar, then click **Start**.
 
 ## 🧠 AI Training Pipeline
 

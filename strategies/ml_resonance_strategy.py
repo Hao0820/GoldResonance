@@ -15,10 +15,11 @@ from .base_strategy import BaseStrategy
 logger = logging.getLogger(__name__)
 
 class MLResonanceStrategy(BaseStrategy):
-    def __init__(self, name="ML_Resonance_AI", symbol="XAUUSD", lot_size=0.1, trade_tracker=None):
+    def __init__(self, name="ML_Resonance_AI", symbol="XAUUSD", lot_size_A=0.1, lot_size_B=0.1, trade_tracker=None):
         super().__init__(name)
         self.symbol = symbol
-        self.lot_size = lot_size
+        self.lot_size_A = lot_size_A
+        self.lot_size_B = lot_size_B
         self.max_positions = 2  # 允許兩個模型各自持倉
         self.magic_number_A = 88001 # 模型A (利潤極大化)
         self.magic_number_B = 88002 # 模型B (勝率極大化)
@@ -227,20 +228,20 @@ class MLResonanceStrategy(BaseStrategy):
         if pos_A_count == 0 and self.last_signal_time_A != m5_live['time']:
             if model_A_buy_score >= 0.60 and model_A_buy_score > model_A_sell_score:
                 sl, tp = ask - 8.0, ask + 10.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size, ask, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
-                if res:
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size_A, ask, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
+                if res is not None:
                     logger.info(f"🚀 [模型 A - 利潤引擎] 多單進場 @ {ask:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_A_buy_score*100:.1f}% | Ticket: {res.order}")
                     if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "BUY", self.lot_size, ask, sl, tp)
+                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "BUY", self.lot_size_A, ask, sl, tp)
                 self.last_signal_time_A = m5_live['time']
                 
             elif model_A_sell_score >= 0.60 and model_A_sell_score > model_A_buy_score:
                 sl, tp = bid + 8.0, bid - 10.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size, bid, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
-                if res:
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size_A, bid, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
+                if res is not None:
                     logger.info(f"🚀 [模型 A - 利潤引擎] 空單進場 @ {bid:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_A_sell_score*100:.1f}% | Ticket: {res.order}")
                     if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "SELL", self.lot_size, bid, sl, tp)
+                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "SELL", self.lot_size_A, bid, sl, tp)
                 self.last_signal_time_A = m5_live['time']
 
         # === 執行模型 B (勝率極大化) ===
@@ -248,20 +249,20 @@ class MLResonanceStrategy(BaseStrategy):
         if pos_B_count == 0 and self.last_signal_time_B != m5_live['time']:
             if model_B_buy_score >= 0.65 and model_B_buy_score > model_B_sell_score:
                 sl, tp = ask - 8.0, ask + 5.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size, ask, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
-                if res:
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size_B, ask, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
+                if res is not None:
                     logger.info(f"🎯 [模型 B - 勝率引擎] 多單進場 @ {ask:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_B_buy_score*100:.1f}% | Ticket: {res.order}")
                     if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "BUY", self.lot_size, ask, sl, tp)
+                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "BUY", self.lot_size_B, ask, sl, tp)
                 self.last_signal_time_B = m5_live['time']
                 
             elif model_B_sell_score >= 0.65 and model_B_sell_score > model_B_buy_score:
                 sl, tp = bid + 8.0, bid - 5.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size, bid, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
-                if res:
+                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size_B, bid, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
+                if res is not None:
                     logger.info(f"🎯 [模型 B - 勝率引擎] 空單進場 @ {bid:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_B_sell_score*100:.1f}% | Ticket: {res.order}")
                     if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "SELL", self.lot_size, bid, sl, tp)
+                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "SELL", self.lot_size_B, bid, sl, tp)
                 self.last_signal_time_B = m5_live['time']
         
         # 每 10 個 tick 更新一次 CSV 紀錄

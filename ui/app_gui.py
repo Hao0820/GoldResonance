@@ -82,27 +82,31 @@ class TradingApp(tk.Tk):
         self.btn_connect = ttk.Button(self.control_frame, text="🔗 連線 MT5", command=self.on_connect)
         self.btn_connect.pack(side=tk.LEFT, padx=8)
         
-        # --- Lots Entry (客製化深色樣式) ---
-        ttk.Label(self.control_frame, text="手數:", font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(20, 2))
-        self.ent_lots = tk.Entry(
-            self.control_frame, 
-            width=6, 
-            font=('Consolas', 11, 'bold'),
-            bg=self.BLACK_BG,           # 深色背景
-            fg="white",                 # 白色字體
-            insertbackground="white",   # 白色輸入游標
-            highlightthickness=1,       # 邊框粗細
-            highlightbackground="#585b70", # 預設邊框顏色
-            highlightcolor=self.ACCENT,    # 點擊時邊框變亮
-            relief=tk.FLAT
+        # --- Lots Entry A (模型 A 手數) ---
+        ttk.Label(self.control_frame, text="A手數:", font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(20, 2))
+        self.ent_lots_A = tk.Entry(
+            self.control_frame, width=6, font=('Consolas', 11, 'bold'),
+            bg=self.BLACK_BG, fg=self.GREEN_ACC, insertbackground="white",
+            highlightthickness=1, highlightbackground="#585b70",
+            highlightcolor=self.ACCENT, relief=tk.FLAT
         )
-        self.ent_lots.insert(0, str(getattr(self.engine.strategies[0], 'lot_size', 0.1)) if self.engine.strategies else "0.1")
-        self.ent_lots.pack(side=tk.LEFT, padx=5)
+        self.ent_lots_A.insert(0, str(getattr(self.engine.strategies[0], 'lot_size_A', 0.1)) if self.engine.strategies else "0.1")
+        self.ent_lots_A.pack(side=tk.LEFT, padx=5)
+        self.ent_lots_A.bind('<Return>', lambda e: self.update_strategy_settings(silent=True))
+        self.ent_lots_A.bind('<FocusOut>', lambda e: self.update_strategy_settings(silent=True))
         
-        # (權重滑桿已移除，因為現在是雙模型獨立運行)        
-        # 手數輸入框自動同步
-        self.ent_lots.bind('<Return>', lambda e: self.update_strategy_settings(silent=True))
-        self.ent_lots.bind('<FocusOut>', lambda e: self.update_strategy_settings(silent=True))
+        # --- Lots Entry B (模型 B 手數) ---
+        ttk.Label(self.control_frame, text="B手數:", font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(10, 2))
+        self.ent_lots_B = tk.Entry(
+            self.control_frame, width=6, font=('Consolas', 11, 'bold'),
+            bg=self.BLACK_BG, fg="#89b4fa", insertbackground="white",
+            highlightthickness=1, highlightbackground="#585b70",
+            highlightcolor=self.ACCENT, relief=tk.FLAT
+        )
+        self.ent_lots_B.insert(0, str(getattr(self.engine.strategies[0], 'lot_size_B', 0.1)) if self.engine.strategies else "0.1")
+        self.ent_lots_B.pack(side=tk.LEFT, padx=5)
+        self.ent_lots_B.bind('<Return>', lambda e: self.update_strategy_settings(silent=True))
+        self.ent_lots_B.bind('<FocusOut>', lambda e: self.update_strategy_settings(silent=True))
         
         self.btn_start = ttk.Button(self.control_frame, text="▶ 啟動 EA", command=self.on_start, state=tk.DISABLED)
         self.btn_start.pack(side=tk.LEFT, padx=8)
@@ -199,17 +203,15 @@ class TradingApp(tk.Tk):
         self.anim_idx = 0
                 
     def update_strategy_settings(self, silent=False):
-        """同步介面設定到策略實體"""
         try:
-            lots = float(self.ent_lots.get())
-            
-            if lots <= 0: raise ValueError
-            
+            lots_A = float(self.ent_lots_A.get())
+            lots_B = float(self.ent_lots_B.get())
+            if lots_A <= 0 or lots_B <= 0: raise ValueError
             for strat in self.engine.strategies:
-                strat.lot_size = lots
-            
+                strat.lot_size_A = lots_A
+                strat.lot_size_B = lots_B
             if not silent:
-                logging.info(f"✅ 參數同步: 手數={lots}")
+                logging.info(f"✅ 參數同步: A手數={lots_A} | B手數={lots_B}")
         except ValueError:
             if not silent:
                 logging.error("❌ 數值格式錯誤，請輸入正數。")

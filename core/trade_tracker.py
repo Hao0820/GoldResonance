@@ -43,51 +43,45 @@ class TradeTracker:
         
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         df.to_csv(self.filename, index=False)
-        logger.info(f"✅ 已記錄新訂單進 CSV: {ticket} ({model_name})")
 
     def update_closed_trades(self, connector):
         try:
             df = pd.read_csv(self.filename)
-            open_trades = df[df['Status'] == 'OPEN']
             
-            if open_trades.empty:
-                return
-                
-            # 取得歷史紀錄 (從 2000 年開始抓，確保涵蓋所有)
-            from_date = datetime(2000, 1, 1)
-            to_date = datetime.now()
-            deals = mt5.history_deals_get(from_date, to_date)
+            # 找出所有 Profit 仍為 0 的訂單 (不論 OPEN 或 CLOSED，確保補填)
+            unresolved = df[df['Profit'] == 0.0]
             
-            if not deals:
+            if unresolved.empty:
                 return
-                
-            # 將 deals 轉為容易搜尋的字典 (以 position_id 作為 key)
-            # MT5 中，平倉的 deal 會帶有對應開倉的 position_id
-            deals_dict = {}
-            for deal in deals:
-                # 篩選平倉 deal (Entry Out)
-                if deal.entry == 1: # DEAL_ENTRY_OUT
-                    if deal.position_id not in deals_dict:
-                        deals_dict[deal.position_id] = []
-                    deals_dict[deal.position_id].append(deal)
-
+            
             updated = False
-            for idx, row in open_trades.iterrows():
+            for idx, row in unresolved.iterrows():
                 ticket = int(row['Ticket'])
                 
-                # 如果該訂單有對應的平倉歷史
-                if ticket in deals_dict:
-                    closing_deals = deals_dict[ticket]
-                    total_profit = sum(d.profit for d in closing_deals)
-                    
-                    df.at[idx, 'Status'] = 'CLOSED'
-                    df.at[idx, 'Close_Time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    df.at[idx, 'Profit'] = round(total_profit, 2)
-                    df.at[idx, 'Outcome'] = 'WIN' if total_profit > 0 else ('LOSS' if total_profit < 0 else 'TIE')
-                    updated = True
-                    
-                    logger.info(f"💰 訂單 {ticket} ({row['Model_Name']}) 已平倉，獲利: ${total_profit:.2f}")
-
+                # 直接用 position ID (= ticket) 去 MT5 查這張單的成交記錄
+                deals = mt5.history_deals_get(position=ticket)
+                
+                if not deals:
+                    continue
+                
+                # 找出所有平倉 deal (DEAL_ENTRY_OUT = 1)
+                close_deals = [d for d in deals if d.entry == 1]
+                
+                if not close_deals:
+                    continue  # 還在持倉中，尚未平倉
+                
+                total_profit = sum(d.profit for d in close_deals)
+                close_time = datetime.fromtimestamp(close_deals[-1].time).strftime("%Y-%m-%d %H:%M:%S")
+                outcome = 'WIN' if total_profit > 0 else ('LOSS' if total_profit < 0 else 'TIE')
+                
+                df.at[idx, 'Status'] = 'CLOSED'
+                df.at[idx, 'Close_Time'] = close_time
+                df.at[idx, 'Profit'] = round(total_profit, 2)
+                df.at[idx, 'Outcome'] = outcome
+                updated = True
+                
+                logger.info(f"💰 [訂單 {ticket}] [{row['Model_Name']}] 已平倉 | 結果: {outcome} | 獲利: ${total_profit:.2f}")
+            
             if updated:
                 df.to_csv(self.filename, index=False)
                 self.print_stats(df)

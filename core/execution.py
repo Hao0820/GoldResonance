@@ -64,5 +64,3 @@ class ExecutionManager:
             
         logger.info(f"下單成功，訂單號碼: {result.order}")
         return result
-
-        return result

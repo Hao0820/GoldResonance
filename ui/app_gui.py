@@ -270,7 +270,9 @@ class TradingApp(tk.Tk):
                     strat.reload_models()
             self.after(0, lambda: logging.info("🚀 模型重訓並重載完成！最新大腦已上線。"))
         except Exception as e:
-            self.after(0, lambda: logging.error(f"❌ 重訓失敗: {e}"))
+            err_msg = str(e)
+            logging.error(f"❌ 重訓崩潰: {err_msg}")
+            self.after(0, lambda m=err_msg: logging.error(f"❌ 重訓失敗: {m}"))
         finally:
             self.after(0, lambda: self.btn_retrain.config(state=tk.NORMAL, text="🔄 重訓模型"))
         

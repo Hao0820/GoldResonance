@@ -18,13 +18,20 @@ def evolve():
     start_time = time.time()
 
     # 1. 匯出數據
-    logging.info("--- 階段 1/3: 匯出最新歷史數據 ---")
-    # 這裡我們維持匯出過去 12 個月，進行一年期大回測
-    success = export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M5, tf_name="M5", months_back=12)
-    if not success:
-        logging.error("數據匯出失敗，終止進化。")
-        return
+    logging.info("--- 階段 1/3: 匯出多時區歷史數據 ---")
+    # 根據經紀商限制彈性抓取
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M1,  tf_name="M1",  months_back=2.9)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M5,  tf_name="M5",  months_back=6)
     export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M15, tf_name="M15", months_back=12)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M30, tf_name="M30", months_back=12)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_H1,  tf_name="H1",  months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_H4,  tf_name="H4",  months_back=36)
+    export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_D1,  tf_name="D1",  months_back=36)
+    
+    # 代理指標 (DXY)
+    export_data(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M5,  tf_name="M5",  months_back=6)
+    export_data(symbol="EURUSD", timeframe=mt5.TIMEFRAME_M30, tf_name="M30", months_back=12)
+    
     mt5.shutdown()
 
     # 2. 建立資料集

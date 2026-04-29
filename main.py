@@ -23,7 +23,7 @@ def main():
     engine = StrategyEngine(connector, executor)
     
     tracker = TradeTracker()
-    ml_ai = MLResonanceStrategy(name="雙引擎 AI (A/B模型)", symbol="XAUUSD", lot_size_A=0.1, lot_size_B=0.1, trade_tracker=tracker)
+    ml_ai = MLResonanceStrategy(name="雙引擎 AI (A/B模型)", symbol="XAUUSD", lot_size_A=0.1, lot_size_B=0.1, tp_dist=5.0, sl_dist=8.0, trade_tracker=tracker)
     engine.add_strategy(ml_ai)
     
     # Start GUI

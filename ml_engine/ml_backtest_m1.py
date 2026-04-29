@@ -1,32 +1,42 @@
 import pandas as pd
+import numpy as np
 import joblib
 import warnings
 import os
+import logging
 
 warnings.filterwarnings("ignore", category=UserWarning)
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
 
 def run_m1_backtest():
-    print("--- 啟動 M1 級別高精度回測 (3個月) ---")
+    logging.info("--- 啟動集成大腦 M1 級別高精度回測 ---")
     
-    # 載入資料
+    # 載入資料與模型
     try:
         m1_df = pd.read_csv("history_data/XAUUSD_M1.csv")
-        m5_df = pd.read_csv("ml_dataset.csv") # 這是我們剛才產生的 3個月特徵資料集
+        # 直接使用剛才產生的資料集
+        m5_df = pd.read_csv("ml_dataset.csv") 
         
-        xgb_buy = joblib.load('models/xgb_buy.pkl')
-        xgb_sell = joblib.load('models/xgb_sell.pkl')
-        rf_buy = joblib.load('models/rf_buy.pkl')
-        rf_sell = joblib.load('models/rf_sell.pkl')
+        # 載入所有集成組件
+        models = {
+            'xgb_b': joblib.load('models/xgb_buy.pkl'),
+            'lgb_b': joblib.load('models/lgb_buy.pkl'),
+            'rf_b':  joblib.load('models/rf_buy.pkl'),
+            'stack_b': joblib.load('models/stack_buy.pkl'),
+            'xgb_s': joblib.load('models/xgb_sell.pkl'),
+            'lgb_s': joblib.load('models/lgb_sell.pkl'),
+            'rf_s':  joblib.load('models/rf_sell.pkl'),
+            'stack_s': joblib.load('models/stack_sell.pkl'),
+        }
     except Exception as e:
-        print(f"資料載入失敗: {e}")
+        logging.error(f"資料或模型載入失敗: {e}")
         return
 
     m1_df['time'] = pd.to_datetime(m1_df['time'])
     m5_df['time'] = pd.to_datetime(m5_df['time'])
-    
-    # 確保 M1 數據按時間排序
     m1_df = m1_df.sort_values('time')
     
+    # 與訓練一致的 37 個特徵
     features = [
         'm5_ema_slope', 'm5_rsi_14', 'm5_atr_14', 
         'body_size', 'upper_shadow', 'lower_shadow', 'body_ratio',
@@ -36,99 +46,88 @@ def run_m1_backtest():
         'm5_adx', 'm5_macd_hist', 'm5_cci', 'm5_bb_width',
         'prev_body_size', 'prev_close_change',
         'is_us_session', 'is_asia_session', 'h1_trend', 'h4_trend', 'd1_rsi',
-        'm30_rsi', 'm30_trend', 'm1_momentum'
+        'm30_rsi', 'm30_trend', 'm1_momentum',
+        'volume_ratio', 'spread', 'session_overlap',
+        'rsi_divergence', 'price_vs_vwap', 'pattern_engulf'
     ]
     
     X = m5_df[features]
     
-    # 預測機率
-    xgb_buy_probs = xgb_buy.predict_proba(X)[:, 1]
-    rf_buy_probs = rf_buy.predict_proba(X)[:, 1]
-    xgb_sell_probs = xgb_sell.predict_proba(X)[:, 1]
-    rf_sell_probs = rf_sell.predict_proba(X)[:, 1]
+    # 取得集成預測機率
+    logging.info("計算集成專家預測值...")
+    p_xgb_b = models['xgb_b'].predict_proba(X)[:, 1]
+    p_lgb_b = models['lgb_b'].predict_proba(X)[:, 1]
+    p_rf_b  = models['rf_b'].predict_proba(X)[:, 1]
+    meta_b  = np.column_stack([p_xgb_b, p_lgb_b, p_rf_b])
+    final_buy_probs = models['stack_b'].predict_proba(meta_b)[:, 1]
     
-    # 7:3 綜合比例
-    ensemble_buy_probs = (xgb_buy_probs * 0.7) + (rf_buy_probs * 0.3)
-    ensemble_sell_probs = (xgb_sell_probs * 0.7) + (rf_sell_probs * 0.3)
-    
-    threshold = 0.70  # 嚴格的 70% 信心門檻 (狙擊手模式)
-    tp_dist = 5.0
-    sl_dist = 5.0
-    
-    def simulate_precision(buy_probs, sell_probs, name):
+    p_xgb_s = models['xgb_s'].predict_proba(X)[:, 1]
+    p_lgb_s = models['lgb_s'].predict_proba(X)[:, 1]
+    p_rf_s  = models['rf_s'].predict_proba(X)[:, 1]
+    meta_s  = np.column_stack([p_xgb_s, p_lgb_s, p_rf_s])
+    final_sell_probs = models['stack_s'].predict_proba(meta_s)[:, 1]
+
+    def simulate(tp, sl, threshold=0.75):
+        trades, wins, losses = 0, 0, 0
         balance = 1000.0
-        trades = 0
-        wins = 0
-        losses = 0
-        
         in_trade_until = pd.Timestamp.min
-        
-        # 為了加速運算，將 M1 轉為字典索引
-        m1_data = m1_df.set_index('time')
         
         for i in range(len(m5_df)):
             current_time = m5_df['time'].iloc[i]
+            if current_time < in_trade_until: continue
             
-            if current_time < in_trade_until:
-                continue
+            buy_sig = final_buy_probs[i] > threshold
+            sell_sig = final_sell_probs[i] > threshold
             
-            is_buy = buy_probs[i] > threshold and buy_probs[i] > sell_probs[i]
-            is_sell = sell_probs[i] > threshold and sell_probs[i] > buy_probs[i]
-            
-            if is_buy or is_sell:
+            if buy_sig or sell_sig:
                 entry_price = m5_df['close'].iloc[i]
-                target_tp = entry_price + tp_dist if is_buy else entry_price - tp_dist
-                target_sl = entry_price - sl_dist if is_buy else entry_price + sl_dist
+                target_tp = entry_price + tp if buy_sig else entry_price - tp
+                target_sl = entry_price - sl if buy_sig else entry_price + sl
                 
-                # 從當前時間點開始，在 M1 數據中找結果
-                # 我們往後找最多 300 根 M1 K棒 (5小時)
-                future_m1 = m1_df[m1_df['time'] > current_time].head(300)
+                # 在 M1 資料找結果 (最多找 480 根 = 8 小時)
+                future_m1 = m1_df[m1_df['time'] > current_time].head(480)
                 
                 outcome = None
-                exit_time = current_time
-                
-                for _, m1_row in future_m1.iterrows():
-                    if is_buy:
-                        if m1_row['low'] <= target_sl:
-                            outcome = 'loss'
-                            exit_time = m1_row['time']
-                            break
-                        if m1_row['high'] >= target_tp:
-                            outcome = 'win'
-                            exit_time = m1_row['time']
-                            break
-                    else: # Sell
-                        if m1_row['high'] >= target_sl:
-                            outcome = 'loss'
-                            exit_time = m1_row['time']
-                            break
-                        if m1_row['low'] <= target_tp:
-                            outcome = 'win'
-                            exit_time = m1_row['time']
-                            break
+                for _, m1 in future_m1.iterrows():
+                    if buy_sig:
+                        if m1['low'] <= target_sl: 
+                            outcome = 'loss'; break
+                        if m1['high'] >= target_tp: 
+                            outcome = 'win'; break
+                    else:
+                        if m1['high'] >= target_sl: 
+                            outcome = 'loss'; break
+                        if m1['low'] <= target_tp: 
+                            outcome = 'win'; break
                 
                 if outcome:
                     trades += 1
                     if outcome == 'win':
-                        wins += 1
-                        balance += 50.0
+                        wins += 1; balance += (tp * 10) # 簡化計算
                     else:
-                        losses += 1
-                        balance -= 50.0
-                    in_trade_until = exit_time # 冷卻直到這單結束
-                
-        win_rate = (wins/trades*100) if trades>0 else 0
-        print(f"\n[{name}] - M1 級別高精度回測")
-        print(f"初始資金: $1000.00")
-        print(f"總交易次數: {trades} 次 (勝: {wins}, 敗: {losses})")
-        print(f"精確勝率: {win_rate:.1f}%")
-        print(f"淨利潤(三個月): ${balance - 1000:.2f}")
+                        losses += 1; balance -= (sl * 10)
+                    in_trade_until = m1['time'] # 到這單結束前不進場
+        
+        wr = (wins/trades*100) if trades>0 else 0
+        return trades, wins, losses, wr, balance
 
-    print("="*55)
-    simulate_precision(xgb_buy_probs, xgb_sell_probs, "方案 A: 100% XGBoost")
-    simulate_precision(rf_buy_probs, rf_sell_probs, "方案 B: 100% Random Forest")
-    simulate_precision(ensemble_buy_probs, ensemble_sell_probs, "方案 C: 7:3 綜合比例")
-    print("="*55)
+    # 執行三種方案
+    configs = [
+        {"name": "Sniper (1:2 RR)", "tp": 10.0, "sl": 5.0,  "threshold": 0.80},
+        {"name": "Balanced (1:1.4 RR)", "tp": 7.0,  "sl": 5.0,  "threshold": 0.75},
+        {"name": "HighWinRate (1:0.6 RR)", "tp": 5.0,  "sl": 8.0,  "threshold": 0.70}
+    ]
+    
+    print("\n" + "="*70)
+    print(f"{'Strategy Name':<25} | {'Count':<5} | {'W/L':<10} | {'WinRate':<8} | {'Profit':<10}")
+    print("-"*70)
+    
+    for cfg in configs:
+        t, w, l, wr, bal = simulate(cfg['tp'], cfg['sl'], cfg['threshold'])
+        print(f"{cfg['name']:<23} | {t:<5} | {w}/{l:<7} | {wr:>5.1f}% | ${bal-1000:>8.2f}")
+    
+    print("="*70)
+    print("註：預估獲利僅供參考，未包含點差與滑價。回測時間範圍取決於 M1 CSV 長度。")
 
 if __name__ == "__main__":
     run_m1_backtest()

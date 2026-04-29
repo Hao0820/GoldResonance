@@ -272,6 +272,19 @@ class MLResonanceStrategy(BaseStrategy):
         model_B_buy_score = final_buy_prob
         model_B_sell_score = final_sell_prob
         
+        # 4. 決策與執行 (高勝率模式：門檻均設為 0.70)
+        # 模型 A 門檻
+        if model_A_buy_score > 0.70:
+            self._execute_trade(mt5.ORDER_TYPE_BUY, self.lot_size_A, "Model_A_Buy")
+        elif model_A_sell_score > 0.70:
+            self._execute_trade(mt5.ORDER_TYPE_SELL, self.lot_size_A, "Model_A_Sell")
+            
+        # 模型 B 門檻 (原本較嚴格，現在同步為高勝率門檻)
+        if model_B_buy_score > 0.70:
+            self._execute_trade(mt5.ORDER_TYPE_BUY, self.lot_size_B, "Model_B_Buy")
+        elif model_B_sell_score > 0.70:
+            self._execute_trade(mt5.ORDER_TYPE_SELL, self.lot_size_B, "Model_B_Sell")
+        
         # 儲存供 UI 讀取
         self.model_a_buy = model_A_buy_score
         self.model_a_sell = model_A_sell_score

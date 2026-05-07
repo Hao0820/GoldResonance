@@ -7,8 +7,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TradeTracker:
-    def __init__(self, filename="trade_records.csv"):
-        self.filename = filename
+    def __init__(self, filename=None):
+        if filename is None:
+            # 自動定位到 gold 目錄下的 trade_records.csv
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.filename = os.path.join(base_dir, "trade_records.csv")
+        else:
+            self.filename = filename
         self.columns = [
             "Ticket", "Open_Time", "Model_Name", "Type", "Lots", 
             "Open_Price", "SL", "TP", "Status", "Close_Time", "Profit", "Outcome"

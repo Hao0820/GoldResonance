@@ -1,13 +1,14 @@
 import MetaTrader5 as mt5
-import logging
 import pandas as pd
 import numpy as np
-import ta
 import joblib
 import os
+import time
+import logging
+
+import ta
 import warnings
 
-# 徹底攔截 AI 模型載入時的並行運算警告
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from .base_strategy import BaseStrategy
@@ -15,335 +16,376 @@ from .base_strategy import BaseStrategy
 logger = logging.getLogger(__name__)
 
 class MLResonanceStrategy(BaseStrategy):
-    def __init__(self, name="ML_Resonance_AI", symbol="XAUUSD", lot_size_A=0.1, lot_size_B=0.1, trade_tracker=None):
+    def __init__(self, name="AI_Gold", symbol="XAUUSD", lot_size=0.1, trade_tracker=None):
         super().__init__(name)
         self.symbol = symbol
-        self.lot_size_A = lot_size_A
-        self.lot_size_B = lot_size_B
-        self.max_positions = 2  # 允許兩個模型各自持倉
-        self.magic_number_A = 88001 # 模型A (利潤極大化)
-        self.magic_number_B = 88002 # 模型B (勝率極大化)
-        self.status = "雙引擎 AI 載入中..."
-        self.model_a_buy = 0.0
-        self.model_a_sell = 0.0
-        self.model_b_buy = 0.0
-        self.model_b_sell = 0.0
-        self.last_signal_time_A = None
-        self.last_signal_time_B = None
+        self.lot_size = lot_size
         self.trade_tracker = trade_tracker
-        self.tick_counter = 0
-        
-        # 載入模型
+
+        # --- 策略參數 ---
+        self.magic_number = 88001
+        self.status = "AI 信心率大腦載入中..."
+        self.FIXED_TP  = 5.0   # 止盈：5 點（與訓練標籤一致）
+        self.FIXED_SL  = 5.0   # 止損：5 點
+        self.THRESHOLD = 0.65  # 信心率門檻
+        self.conf_buy  = 0.0   # 多單信心率 (0.0 ~ 1.0)
+        self.conf_sell = 0.0   # 空單信心率 (0.0 ~ 1.0)
+
+        # --- 波動過濾器 ---
+        # M5 布林中軌(21均) 5根斜率絕對值超過此門檻 → 視為暴力行情，跳過模型
+        # XAUUSD M5：正常回踩 < 1.5，趨勢加速 1.5~3.0，爆發行情 > 3.0
+        self.BB_SLOPE_LIMIT = 3.0    # 單位：點/根（可在 GUI 調整）
+        self.bb_slope       = 0.0    # 最新 BB 中軌斜率（供 GUI 顯示）
+        self.filter_blocked = False  # True = 本次被波動過濾擋下
+
+        # --- 嚴格模式 (PPT 規則) ---
+        self.PPT_STRICT_MODE  = True  # 必須符合 2/3/4階規則才進場
+        self.current_stage    = 0     # 供 GUI 顯示目前的階段 (0=無)
+        self.signal_dir       = 0     # 供 GUI 顯示訊號方向 (1=多, -1=空, 0=無)
+
+        # --- GUI 統計 ---
+        self.today_wins       = 0     # 今日獲利筆數
+        self.today_losses     = 0     # 今日虧損筆數
+        self.last_signal_time = None  # 上次觸發訊號時間（字串）
+
+        self.models_loaded = False
         self._load_models()
-        
+
     def _load_models(self):
-        base_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        models_dir = os.path.join(base_dir, "ml_engine", "models")
         try:
-            # 載入所有集成專家
-            self.xgb_buy = joblib.load(os.path.join(base_path, 'xgb_buy.pkl'))
-            self.lgb_buy = joblib.load(os.path.join(base_path, 'lgb_buy.pkl'))
-            self.rf_buy  = joblib.load(os.path.join(base_path, 'rf_buy.pkl'))
-            self.stack_buy = joblib.load(os.path.join(base_path, 'stack_buy.pkl'))
-            
-            self.xgb_sell = joblib.load(os.path.join(base_path, 'xgb_sell.pkl'))
-            self.lgb_sell = joblib.load(os.path.join(base_path, 'lgb_sell.pkl'))
-            self.rf_sell  = joblib.load(os.path.join(base_path, 'rf_sell.pkl'))
-            self.stack_sell = joblib.load(os.path.join(base_path, 'stack_sell.pkl'))
-            
-            # 效能優化 (多執行緒設為 1)
-            for m in [self.xgb_buy, self.lgb_buy, self.rf_buy, self.xgb_sell, self.lgb_sell, self.rf_sell]:
-                if hasattr(m, 'n_jobs'): m.n_jobs = 1
-            
-            self.status = "🧠 集成大腦運轉中 (XGB+LGB+RF+Stacking)"
+            self.models = {
+                'win_b': joblib.load(os.path.join(models_dir, 'win_buy.pkl')),
+                'win_s': joblib.load(os.path.join(models_dir, 'win_sell.pkl')),
+            }
+            self.status = "AI 信心率大腦就緒 (TP=5 / SL=5)"
             self.models_loaded = True
+            logger.info("✅ 成功載入信心率大腦 win_buy.pkl / win_sell.pkl")
         except Exception as e:
-            logger.error(f"模型載入失敗: {e}")
-            self.status = "❌ AI 模型缺失"
+            self.status = f"模型載入失敗: {e}"
+            logger.error(f"❌ 模型載入失敗: {e}")
             self.models_loaded = False
 
-    def reload_models(self):
-        logger.info("🔄 開始重新載入 AI 模型...")
-        self._load_models()
-        if self.models_loaded:
-            logger.info("✅ AI 模型重載完成！新大腦已上線。")
 
-    def get_data(self):
-        # 取得全時區數據 (M1, M5, M15, M30, H1, H4, D1)
-        m1_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_M1, 60)
-        m5_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_M5, 300)
-        m15_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_M15, 100)
-        m30_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_M30, 60)
-        h1_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_H1, 60)
-        h4_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_H4, 50)
-        d1_df = self.connector.get_rates(self.symbol, mt5.TIMEFRAME_D1, 30)
-        
-        if any(df is None or df.empty for df in [m1_df, m5_df, m15_df, m30_df, h1_df, h4_df, d1_df]):
-            return None, None, None, None, None, None, None
-            
-        return m1_df, m5_df, m15_df, m30_df, h1_df, h4_df, d1_df
-
-    def get_current_price(self):
-        info = self.connector.get_symbol_info(self.symbol)
-        if info:
-            return info.get('ask', 0.0), info.get('bid', 0.0)
-        return 0.0, 0.0
-
-    def on_tick(self, can_execute_new_trades: bool = True):
+    def on_tick(self):
+        """每秒被引擎驅動一次：計算 44 維特徵 → AI 預測 TP/SL → 決策下單"""
         if not self.models_loaded:
             return
-            
-        ask, bid = self.get_current_price()
-        if ask == 0 or bid == 0:
-            return
 
-        m1_df, m5_df, m15_df, m30_df, h1_df, h4_df, d1_df = self.get_data()
-        if m1_df is None or m5_df is None or len(m5_df) < 20: 
-            return
-            
-        # 計算特徵 (與 create_dataset 邏輯保持 100% 一致)
-        # M15 特徵
-        m15_bb = ta.volatility.BollingerBands(close=m15_df['close'], window=21, window_dev=2.1)
-        m15_bb_h = m15_bb.bollinger_hband().iloc[-1]
-        m15_bb_l = m15_bb.bollinger_lband().iloc[-1]
-        m15_bb_m = m15_bb.bollinger_mavg().iloc[-1]
-        m15_ema = ta.trend.EMAIndicator(close=m15_df['close'], window=12).ema_indicator()
-        m15_ema_curr = m15_ema.iloc[-1]
-        m15_ema_prev5 = m15_ema.iloc[-6] if len(m15_ema) >= 6 else m15_ema_curr
-        m15_ema_slope = m15_ema_curr - m15_ema_prev5
-        
-        m15_curr = m15_df.iloc[-1]
-        m15_dist_h = m15_curr['high'] - m15_bb_h
-        m15_dist_l = m15_curr['low'] - m15_bb_l
-        m15_dist_m = m15_curr['close'] - m15_bb_m
-        
-        # M5 特徵
-        m5_bb = ta.volatility.BollingerBands(close=m5_df['close'], window=21, window_dev=2.1)
-        m5_bb_h = m5_bb.bollinger_hband().iloc[-1]
-        m5_bb_l = m5_bb.bollinger_lband().iloc[-1]
-        m5_bb_m = m5_bb.bollinger_mavg().iloc[-1]
-        m5_ema = ta.trend.EMAIndicator(close=m5_df['close'], window=12).ema_indicator()
-        m5_ema_curr = m5_ema.iloc[-1]
-        m5_ema_prev5 = m5_ema.iloc[-6] if len(m5_ema) >= 6 else m5_ema_curr
-        m5_ema_slope = m5_ema_curr - m5_ema_prev5
-        
-        m5_rsi = ta.momentum.RSIIndicator(close=m5_df['close'], window=14).rsi().iloc[-1]
-        m5_atr = ta.volatility.AverageTrueRange(high=m5_df['high'], low=m5_df['low'], close=m5_df['close'], window=14).average_true_range().iloc[-1]
-        
+        # 完整拓取所有時區數據 (統一抓取 500 根，保證所有指標與 MT5 顯示同步收斂)
+        rates_m1  = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M1,  0, 500)
+        rates_m5  = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M5,  0, 500)
+        rates_m15 = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M15, 0, 500)
+        rates_m30 = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M30, 0, 500)
+        rates_h1  = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_H1,  0, 500)
+        rates_h4  = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_H4,  0, 500)
+        rates_d1  = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_D1,  0, 500)
+
+        if rates_m5 is None or rates_m1 is None: return
+
+        m5_df = pd.DataFrame(rates_m5)
+        m1_df = pd.DataFrame(rates_m1)
+        m15_df = pd.DataFrame(rates_m15)
         m5_live = m5_df.iloc[-1]
+        m5_close = m5_df['close']
+
+        # --- 特徵工程 ---
+        m5_ema_12 = ta.trend.EMAIndicator(m5_close, window=12).ema_indicator()
+        m5_ema_slope = m5_ema_12.iloc[-1] - m5_ema_12.iloc[-5]
+        m5_rsi = ta.momentum.RSIIndicator(m5_close, window=14).rsi().iloc[-1]
+        m5_atr = ta.volatility.AverageTrueRange(m5_df['high'], m5_df['low'], m5_close, window=14).average_true_range().iloc[-1]
+        
         body_size = m5_live['close'] - m5_live['open']
         upper_shadow = m5_live['high'] - max(m5_live['open'], m5_live['close'])
         lower_shadow = min(m5_live['open'], m5_live['close']) - m5_live['low']
         body_ratio = body_size / (m5_live['high'] - m5_live['low'] + 0.0001)
-        
-        hour = m5_live['time'].hour
-        day_of_week = m5_live['time'].dayofweek
-        
-        m5_dist_h = m5_live['high'] - m5_bb_h
-        m5_dist_l = m5_live['low'] - m5_bb_l
-        m5_dist_m = m5_live['close'] - m5_bb_m
-        m5_dist_ema = m5_live['close'] - m5_ema_curr
-        
-        # 4. 新增高階特徵 (與訓練集完全一致)
-        # ADX
-        adx_m5 = ta.trend.ADXIndicator(m5_df['high'], m5_df['low'], m5_df['close'], window=14)
-        m5_adx = adx_m5.adx().iloc[-1]
-        
-        # MACD
-        macd_m5 = ta.trend.MACD(m5_df['close'])
-        m5_macd_hist = macd_m5.macd_diff().iloc[-1]
-        
-        # CCI
-        m5_cci = ta.trend.CCIIndicator(m5_df['high'], m5_df['low'], m5_df['close'], window=20).cci().iloc[-1]
-        
-        # BB Width
-        m5_bb_width = (m5_bb_h - m5_bb_l) / (m5_bb_m + 0.0001)
-        
-        # 型態基礎
-        prev_m5 = m5_df.iloc[-2]
-        prev_body_size = prev_m5['close'] - prev_m5['open']
-        prev_close_change = m5_live['close'] - prev_m5['close']
-        
-        # H1 大趨勢背景
-        h1_ema_12 = ta.trend.EMAIndicator(h1_df['close'], window=12).ema_indicator()
-        h1_trend = h1_ema_12.iloc[-1] - h1_ema_12.iloc[-2]
 
-        # 5. 市場時段與多時區 (Level 4)
+        current_time = pd.to_datetime(m5_live['time'], unit='s')
+        hour, day_of_week = current_time.hour, current_time.dayofweek
         is_us_session = 1 if 13 <= hour <= 21 else 0
         is_asia_session = 1 if 0 <= hour <= 8 else 0
-        
-        # H4 趨勢
-        h4_ema_20 = ta.trend.EMAIndicator(h4_df['close'], window=20).ema_indicator()
-        h4_trend = h4_ema_20.iloc[-1] - h4_ema_20.iloc[-2]
-        
-        # D1 強弱
-        d1_rsi = ta.momentum.RSIIndicator(d1_df['close'], window=14).rsi().iloc[-1]
-
-        # 6. 新增 M1 與 M30 特徵 (Level 5)
-        # M30 特徵
-        m30_rsi = ta.momentum.RSIIndicator(m30_df['close'], window=14).rsi().iloc[-1]
-        m30_ema_20 = ta.trend.EMAIndicator(m30_df['close'], window=20).ema_indicator()
-        m30_trend = m30_ema_20.iloc[-1] - m30_ema_20.iloc[-2]
-        
-        # M1 微觀動能
-        m1_ema_5 = ta.trend.EMAIndicator(m1_df['close'], window=5).ema_indicator()
-        m1_momentum = m1_ema_5.iloc[-1] - m1_ema_5.iloc[-2]
-
-        # ===== 新增 6 個高品質即時特徵 =====
-        # 1. 成交量比率
-        vol_ma20 = m5_df['tick_volume'].rolling(20).mean().iloc[-1]
-        volume_ratio = float(m5_live['tick_volume']) / (vol_ma20 + 1)
-        
-        # 2. 點差
-        if 'spread' in m5_df.columns:
-            spread_val = float(m5_live['spread'])
-        else:
-            spread_val = (m5_live['high'] - m5_live['low']) / (m5_atr + 0.001)
-        
-        # 3. 歐美盤重疊時段
         session_overlap = 1 if 13 <= hour <= 17 else 0
+
+        m15_bb = ta.volatility.BollingerBands(m15_df['close'], window=21)
+        m15_bb_o = ta.volatility.BollingerBands(m15_df['close'], window=55)  # 外帶
+        m15_dist_h  = m5_live['close'] - m15_bb.bollinger_hband().iloc[-1]
+        m15_dist_l  = m5_live['close'] - m15_bb.bollinger_lband().iloc[-1]
+        m15_dist_m  = m5_live['close'] - m15_bb.bollinger_mavg().iloc[-1]
+        m15_dist_oh = m5_live['high']  - m15_bb_o.bollinger_hband().iloc[-1]
+        m15_dist_ol = m5_live['low']   - m15_bb_o.bollinger_lband().iloc[-1]
+        m15_ema_12 = ta.trend.EMAIndicator(m15_df['close'], window=12).ema_indicator()
+        m15_ema_slope = m15_ema_12.iloc[-1] - m15_ema_12.iloc[-5]
+
+        # 顯式計算 M5 Bollinger Bands (對齊 MT5: SMA, ddof=0, 偏差 2.1)
+        m5_bb_m = m5_close.rolling(21).mean().iloc[-1]
+        m5_bb_std = m5_close.rolling(21).std(ddof=0).iloc[-1]
+        m5_bb_h = m5_bb_m + 2.1 * m5_bb_std
+        m5_bb_l = m5_bb_m - 2.1 * m5_bb_std
         
-        # 4. RSI 背離
-        rsi_series = ta.momentum.RSIIndicator(close=m5_df['close'], window=14).rsi()
-        rsi_prev5   = rsi_series.iloc[-6] if len(rsi_series) >= 6 else rsi_series.iloc[-1]
-        price_prev5 = m5_df['close'].iloc[-6] if len(m5_df) >= 6 else m5_df['close'].iloc[-1]
-        if m5_live['close'] > price_prev5 and m5_rsi <= rsi_prev5:
-            rsi_divergence = -1.0
-        elif m5_live['close'] < price_prev5 and m5_rsi >= rsi_prev5:
-            rsi_divergence = 1.0
-        else:
-            rsi_divergence = 0.0
-        
-        # 5. 價格與 VWAP 的距離
-        typical_price = (m5_df['high'] + m5_df['low'] + m5_df['close']) / 3
-        vwap = (typical_price * m5_df['tick_volume']).rolling(20).sum().iloc[-1] / \
-               (m5_df['tick_volume'].rolling(20).sum().iloc[-1] + 1)
+        # 顯式計算外帶 (window=55, dev=2.0)
+        m5_bb_o_m = m5_close.rolling(55).mean().iloc[-1]
+        m5_bb_o_std = m5_close.rolling(55).std(ddof=0).iloc[-1]
+        m5_bb_o_h = m5_bb_o_m + 2.0 * m5_bb_o_std
+        m5_bb_o_l = m5_bb_o_m - 2.0 * m5_bb_o_std
+        m5_dist_h   = m5_live['high']  - m5_bb_h
+        m5_dist_l   = m5_live['low']   - m5_bb_l
+        m5_dist_m   = m5_live['close'] - m5_bb_m
+        m5_dist_ema = m5_live['close'] - m5_ema_12.iloc[-1]
+        m5_dist_oh  = m5_live['high']  - m5_bb_o_h
+        m5_dist_ol  = m5_live['low']   - m5_bb_o_l
+        # 盤整評分 (用歷史 48 根(4小時)寬度的最大值，避免太久遠的極端波幅干擾)
+        # 上軌 - 下軌 = 4.2 * 標準差
+        bb_w_series = 4.2 * m5_close.rolling(21).std(ddof=0)
+        consolidation_score = float(1.0 - (bb_w_series.iloc[-1] / (bb_w_series.iloc[-48:].max() + 1e-6)))
+
+        m5_adx = ta.trend.ADXIndicator(m5_df['high'], m5_df['low'], m5_close).adx().iloc[-1]
+        m5_macd_hist = ta.trend.MACD(m5_close).macd_diff().iloc[-1]
+        m5_cci = ta.trend.CCIIndicator(m5_df['high'], m5_df['low'], m5_close).cci().iloc[-1]
+        m5_bb_width = (m5_bb_h - m5_bb_l) / (m5_bb_m + 0.0001)
+
+        prev_body_size = m5_df['close'].iloc[-2] - m5_df['open'].iloc[-2]
+        prev_close_change = m5_df['close'].iloc[-1] - m5_df['close'].iloc[-2]
+
+        h1_trend = ta.trend.EMAIndicator(pd.Series([r['close'] for r in rates_h1]), window=12).ema_indicator().diff().iloc[-1]
+        # H4 趨勢 + 布林帶
+        h4_close_s = pd.Series([r['close'] for r in rates_h4])
+        h4_high_s  = pd.Series([r['high']  for r in rates_h4])
+        h4_low_s   = pd.Series([r['low']   for r in rates_h4])
+        h4_trend   = ta.trend.EMAIndicator(h4_close_s, window=20).ema_indicator().diff().iloc[-1]
+        h4_bb_m = h4_close_s.rolling(21).mean().iloc[-1]
+        h4_bb_std = h4_close_s.rolling(21).std(ddof=0).iloc[-1]
+        h4_bb_h = h4_bb_m + 2.1 * h4_bb_std
+        h4_bb_l = h4_bb_m - 2.1 * h4_bb_std
+        h4_bb_dist_m = float(h4_close_s.iloc[-1] - h4_bb_m)
+        h4_bb_dist_h = float(h4_high_s.iloc[-1]  - h4_bb_h)
+        h4_bb_dist_l = float(h4_low_s.iloc[-1]   - h4_bb_l)
+
+        d1_rsi = ta.momentum.RSIIndicator(pd.Series([r['close'] for r in rates_d1]), window=14).rsi().iloc[-1]
+        m30_df = pd.DataFrame(rates_m30)
+        m30_rsi, m30_trend = ta.momentum.RSIIndicator(m30_df['close'], window=14).rsi().iloc[-1], ta.trend.EMAIndicator(m30_df['close'], window=20).ema_indicator().diff().iloc[-1]
+        m1_momentum = ta.trend.EMAIndicator(m1_df['close'], window=5).ema_indicator().diff().iloc[-1]
+
+        volume_ratio, spread_val = float(m5_live['tick_volume']) / (m5_df['tick_volume'].rolling(20).mean().iloc[-1] + 1), float(m5_live['spread'])
+
+        price_prev5 = m5_df['close'].iloc[-6]
+        rsi_prev5 = ta.momentum.RSIIndicator(m5_close, window=14).rsi().iloc[-6]
+        rsi_divergence = -1.0 if (m5_live['close'] > price_prev5 and m5_rsi < rsi_prev5) else (1.0 if (m5_live['close'] < price_prev5 and m5_rsi > rsi_prev5) else 0.0)
+
+        vwap = ((m5_df['high'] + m5_df['low'] + m5_close) / 3 * m5_df['tick_volume']).rolling(20).sum().iloc[-1] / (m5_df['tick_volume'].rolling(20).sum().iloc[-1] + 1)
         price_vs_vwap = m5_live['close'] - vwap
+        pattern_engulf = 1.0 if (body_size > 0 and prev_body_size < 0 and m5_live['close'] > m5_df['open'].iloc[-2]) else (-1.0 if (body_size < 0 and prev_body_size > 0 and m5_live['close'] < m5_df['open'].iloc[-2]) else 0.0)
+
+        # PPT + 大K棒 + 外帶特徵
+        ema12_dist, mid_bb_dist = m5_live['close'] - m5_ema_12.iloc[-1], m5_live['close'] - m5_bb_m
+        m5_bodies_abs = (m5_df['close'] - m5_df['open']).abs()
+        m5_l_shadows = np.minimum(m5_df['open'], m5_df['close']) - m5_df['low']
+        m5_u_shadows = m5_df['high'] - np.maximum(m5_df['open'], m5_df['close'])
+        consecutive_low_shadows  = float((m5_l_shadows.iloc[-3:] > m5_bodies_abs.iloc[-3:] * 0.5).sum())
+        consecutive_high_shadows = float((m5_u_shadows.iloc[-3:] > m5_bodies_abs.iloc[-3:] * 0.5).sum())
+        avg_body_20  = m5_bodies_abs.rolling(20).mean().iloc[-1]
+        # PPT 台灣慣例：紅K = 上漲（body > 0），綠K = 下跌（body < 0）
+        is_big_red_k   = 1.0 if (body_size > 0 and abs(body_size) > avg_body_20 * 1.5) else 0.0
+        is_big_green_k = 1.0 if (body_size < 0 and abs(body_size) > avg_body_20 * 1.5) else 0.0
+        prev_o, prev_c = m5_df['open'].iloc[-2], m5_df['close'].iloc[-2]
+        pullback_ratio = (m5_live['close'] - prev_o) / (prev_c - prev_o + 0.0001)
+        is_breaking_upper = (1.0 if m5_live['close'] > m5_bb_h else 0.0)
+        is_breaking_lower = (1.0 if m5_live['close'] < m5_bb_l else 0.0)
+
+        # PPT 嚴格模式所需的前一根特徵
+        prev_body = prev_c - prev_o
+        prev_avg_body_20 = m5_bodies_abs.rolling(20).mean().iloc[-2] if len(m5_bodies_abs) >= 20 else avg_body_20
+        prev_big_red_k   = 1.0 if (prev_body > 0 and abs(prev_body) > prev_avg_body_20 * 1.5) else 0.0
+        prev_big_green_k = 1.0 if (prev_body < 0 and abs(prev_body) > prev_avg_body_20 * 1.5) else 0.0
+        prev_bb_m = m5_close.rolling(21).mean().iloc[-2]
+        prev_bb_std = m5_close.rolling(21).std(ddof=0).iloc[-2]
+        prev_bb_h = prev_bb_m + 2.1 * prev_bb_std
+        prev_bb_l = prev_bb_m - 2.1 * prev_bb_std
+        prev_breaking_upper = 1.0 if prev_c > prev_bb_h else 0.0
+        prev_breaking_lower = 1.0 if prev_c < prev_bb_l else 0.0
+
+        # 計算當前所屬 PPT 階段
+        stage = 0
+        signal_dir = 0
         
-        # 6. 吞噬型 K 棒
-        prev2_open  = m5_df['open'].iloc[-2]
-        prev2_close = m5_df['close'].iloc[-2]
-        prev2_body  = prev2_close - prev2_open
-        if body_size > 0 and prev2_body < 0 and m5_live['close'] > prev2_open and m5_live['open'] < prev2_close:
-            pattern_engulf = 1.0
-        elif body_size < 0 and prev2_body > 0 and m5_live['close'] < prev2_open and m5_live['open'] > prev2_close:
-            pattern_engulf = -1.0
-        else:
-            pattern_engulf = 0.0
+        # 4-2 階
+        if prev_big_red_k == 1 and abs(ema12_dist) < 3.5 and lower_shadow > abs(body_size) * 0.25 and m5_dist_l > -6.0:
+            stage = 42; signal_dir = 1
+        elif prev_big_green_k == 1 and abs(ema12_dist) < 3.5 and upper_shadow > abs(body_size) * 0.25 and m5_dist_h < 6.0:
+            stage = 42; signal_dir = -1
+        # 4-1 階
+        elif consolidation_score < 0.35 and prev_breaking_upper == 1 and 0.20 < pullback_ratio < 0.45 and m5_ema_slope > 0:
+            stage = 41; signal_dir = 1
+        elif consolidation_score < 0.35 and prev_breaking_lower == 1 and -0.45 < pullback_ratio < -0.20 and m5_ema_slope < 0:
+            stage = 41; signal_dir = -1
+        # 3 階
+        elif consolidation_score > 0.40 and m5_dist_ol <= 1.5 and m5_rsi < 38 and m30_rsi < 42 and consecutive_low_shadows >= 1:
+            stage = 3; signal_dir = 1
+        elif consolidation_score > 0.40 and m5_dist_oh >= -1.5 and m5_rsi > 62 and m30_rsi > 58 and consecutive_high_shadows >= 1:
+            stage = 3; signal_dir = -1
+        # 2 階
+        elif consolidation_score > 0.55 and mid_bb_dist > 0 and 0.28 < pullback_ratio < 0.65 and consecutive_low_shadows >= 1 and is_breaking_upper == 0 and 38 < m5_rsi < 68:
+            stage = 2; signal_dir = 1
+        elif consolidation_score > 0.55 and mid_bb_dist < 0 and -0.65 < pullback_ratio < -0.28 and consecutive_high_shadows >= 1 and is_breaking_lower == 0 and 32 < m5_rsi < 62:
+            stage = 2; signal_dir = -1
 
-        # 打包成特徵陣列 (共 37 維度)
-        features = pd.DataFrame([{
+        self.current_stage = stage
+        self.signal_dir    = signal_dir   # 同步給 GUI 顯示方向
 
-            'm5_ema_slope': m5_ema_slope, 'm5_rsi_14': m5_rsi, 'm5_atr_14': m5_atr,
-            'body_size': body_size, 'upper_shadow': upper_shadow, 'lower_shadow': lower_shadow, 'body_ratio': body_ratio,
-            'hour': hour, 'day_of_week': day_of_week,
-            'm15_dist_h': m15_dist_h, 'm15_dist_l': m15_dist_l, 'm15_dist_m': m15_dist_m, 'm15_ema_slope': m15_ema_slope,
-            'm5_dist_h': m5_dist_h, 'm5_dist_l': m5_dist_l, 'm5_dist_m': m5_dist_m, 'm5_dist_ema': m5_dist_ema,
-            'm5_adx': m5_adx, 'm5_macd_hist': m5_macd_hist, 'm5_cci': m5_cci, 'm5_bb_width': m5_bb_width,
-            'prev_body_size': prev_body_size, 'prev_close_change': prev_close_change,
-            'is_us_session': is_us_session, 'is_asia_session': is_asia_session, 'h1_trend': h1_trend, 'h4_trend': h4_trend, 'd1_rsi': d1_rsi,
-            'm30_rsi': m30_rsi, 'm30_trend': m30_trend, 'm1_momentum': m1_momentum,
-            # 新增高品質特徵 (+6)
+        # 53 維特徵對齊（與 create_dataset / train_model / backtest 完全一致）
+        feature_cols = [
+            'm5_ema_slope', 'm5_rsi_14', 'm5_atr_14', 'body_size', 'upper_shadow', 'lower_shadow', 'body_ratio',
+            'hour', 'day_of_week', 'm15_dist_h', 'm15_dist_l', 'm15_dist_m', 'm15_ema_slope',
+            'm5_dist_h', 'm5_dist_l', 'm5_dist_m', 'm5_dist_ema', 'm5_adx', 'm5_macd_hist', 'm5_cci', 'm5_bb_width',
+            'prev_body_size', 'prev_close_change', 'is_us_session', 'is_asia_session', 'h1_trend', 'h4_trend', 'd1_rsi',
+            'm30_rsi', 'm30_trend', 'm1_momentum', 'volume_ratio', 'spread', 'session_overlap', 'rsi_divergence', 'price_vs_vwap', 'pattern_engulf',
+            'ema12_dist', 'mid_bb_dist', 'consecutive_low_shadows', 'consecutive_high_shadows', 'pullback_ratio', 'is_breaking_upper', 'is_breaking_lower',
+            'is_big_red_k', 'is_big_green_k', 'm5_dist_oh', 'm5_dist_ol', 'm15_dist_oh', 'm15_dist_ol',
+            'h4_bb_dist_m', 'h4_bb_dist_h', 'h4_bb_dist_l', 'consolidation_score',
+        ]
+        feature_data = {
+            'm5_ema_slope': m5_ema_slope, 'm5_rsi_14': m5_rsi, 'm5_atr_14': m5_atr, 'body_size': body_size,
+            'upper_shadow': upper_shadow, 'lower_shadow': lower_shadow, 'body_ratio': body_ratio,
+            'hour': hour, 'day_of_week': day_of_week, 'm15_dist_h': m15_dist_h, 'm15_dist_l': m15_dist_l,
+            'm15_dist_m': m15_dist_m, 'm15_ema_slope': m15_ema_slope, 'm5_dist_h': m5_dist_h, 'm5_dist_l': m5_dist_l,
+            'm5_dist_m': m5_dist_m, 'm5_dist_ema': m5_dist_ema, 'm5_adx': m5_adx, 'm5_macd_hist': m5_macd_hist,
+            'm5_cci': m5_cci, 'm5_bb_width': m5_bb_width, 'prev_body_size': prev_body_size, 'prev_close_change': prev_close_change,
+            'is_us_session': is_us_session, 'is_asia_session': is_asia_session, 'h1_trend': h1_trend, 'h4_trend': h4_trend,
+            'd1_rsi': d1_rsi, 'm30_rsi': m30_rsi, 'm30_trend': m30_trend, 'm1_momentum': m1_momentum,
             'volume_ratio': volume_ratio, 'spread': spread_val, 'session_overlap': session_overlap,
             'rsi_divergence': rsi_divergence, 'price_vs_vwap': price_vs_vwap, 'pattern_engulf': pattern_engulf,
-        }])
+            'ema12_dist': ema12_dist, 'mid_bb_dist': mid_bb_dist, 'consecutive_low_shadows': consecutive_low_shadows,
+            'consecutive_high_shadows': consecutive_high_shadows, 'pullback_ratio': pullback_ratio,
+            'is_breaking_upper': is_breaking_upper, 'is_breaking_lower': is_breaking_lower,
+            'is_big_red_k': is_big_red_k, 'is_big_green_k': is_big_green_k,
+            'm5_dist_oh': m5_dist_oh, 'm5_dist_ol': m5_dist_ol,
+            'm15_dist_oh': m15_dist_oh, 'm15_dist_ol': m15_dist_ol,
+            'h4_bb_dist_m': h4_bb_dist_m, 'h4_bb_dist_h': h4_bb_dist_h, 'h4_bb_dist_l': h4_bb_dist_l,
+            'consolidation_score': consolidation_score,
+        }
         
-        # --- 多專家集成預測 (XGB + LGB + RF + Stacking) ---
-        # 1. 取得各專家的初步勝率
-        p_xgb_b = self.xgb_buy.predict_proba(features)[0][1]
-        p_lgb_b = self.lgb_buy.predict_proba(features)[0][1]
-        p_rf_b  = self.rf_buy.predict_proba(features)[0][1]
-        
-        p_xgb_s = self.xgb_sell.predict_proba(features)[0][1]
-        p_lgb_s = self.lgb_sell.predict_proba(features)[0][1]
-        p_rf_s  = self.rf_sell.predict_proba(features)[0][1]
-        
-        # 2. 由 Stacker (主審) 進行最終裁決
-        meta_b = np.column_stack([[p_xgb_b, p_lgb_b, p_rf_b]])
-        meta_s = np.column_stack([[p_xgb_s, p_lgb_s, p_rf_s]])
-        
-        final_buy_prob = self.stack_buy.predict_proba(meta_b)[0][1]
-        final_sell_prob = self.stack_sell.predict_proba(meta_s)[0][1]
-        
-        # 3. 分配得分
-        # 模型 A: 使用最新「集成主審」預測 (Stacking)
-        model_A_buy_score = final_buy_prob
-        model_A_sell_score = final_sell_prob
-        
-        # 模型 B: 使用「傳統穩健」預測 (10% XGB + 90% RF)
-        model_B_buy_score = (p_xgb_b * 0.1) + (p_rf_b * 0.9)
-        model_B_sell_score = (p_xgb_s * 0.1) + (p_rf_s * 0.9)
-        
-        # 4. 決策與執行 (進場門檻均為 0.70)
-        # 模型 A 決策
-        if model_A_buy_score > 0.70:
-            self._execute_trade(mt5.ORDER_TYPE_BUY, self.lot_size_A, "Model_A_Buy")
-        elif model_A_sell_score > 0.70:
-            self._execute_trade(mt5.ORDER_TYPE_SELL, self.lot_size_A, "Model_A_Sell")
-            
-        # 模型 B 決策
-        if model_B_buy_score > 0.70:
-            self._execute_trade(mt5.ORDER_TYPE_BUY, self.lot_size_B, "Model_B_Buy")
-        elif model_B_sell_score > 0.70:
-            self._execute_trade(mt5.ORDER_TYPE_SELL, self.lot_size_B, "Model_B_Sell")
-        
-        # 儲存供 UI 讀取
-        self.model_a_buy = model_A_buy_score
-        self.model_a_sell = model_A_sell_score
-        self.model_b_buy = model_B_buy_score
-        self.model_b_sell = model_B_sell_score
-        
-        # 更新 UI 狀態
-        self.status = "市場掃描中"
-        
-        if not can_execute_new_trades: return
-        
-        positions = mt5.positions_get(symbol=self.symbol)
-        pos_A_count = len([p for p in positions if p.magic == self.magic_number_A]) if positions else 0
-        pos_B_count = len([p for p in positions if p.magic == self.magic_number_B]) if positions else 0
+        # 儲存當前指標數值供 GUI 顯示
+        self.live_indicators = {
+            'close': m5_live['close'],
+            'ema12': m5_ema_12.iloc[-1],
+            'ema12_dist': ema12_dist,
+            'bb_h': m5_bb_h,
+            'bb_l': m5_bb_l,
+            'bb_m': m5_bb_m,
+            'bb_o_h': m5_bb_o_h,
+            'bb_o_l': m5_bb_o_l,
+            'consolidation_score': consolidation_score,
+            'h4_trend': h4_trend,
+            'm5_rsi': m5_rsi,
+        }
 
-        # === 執行模型 A (利潤極大化) ===
-        # 配置: Threshold=0.60, TP=10.0, SL=8.0
-        if pos_A_count == 0 and self.last_signal_time_A != m5_live['time']:
-            if model_A_buy_score >= 0.60 and model_A_buy_score > model_A_sell_score:
-                sl, tp = ask - 8.0, ask + 10.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size_A, ask, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
-                if res is not None:
-                    logger.info(f"🚀 [模型 A - 利潤引擎] 多單進場 @ {ask:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_A_buy_score*100:.1f}% | Ticket: {res.order}")
-                    if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "BUY", self.lot_size_A, ask, sl, tp)
-                self.last_signal_time_A = m5_live['time']
-                
-            elif model_A_sell_score >= 0.60 and model_A_sell_score > model_A_buy_score:
-                sl, tp = bid + 8.0, bid - 10.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size_A, bid, sl, tp, comment="Model_A_XGB", magic=self.magic_number_A)
-                if res is not None:
-                    logger.info(f"🚀 [模型 A - 利潤引擎] 空單進場 @ {bid:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_A_sell_score*100:.1f}% | Ticket: {res.order}")
-                    if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_A_XGB", "SELL", self.lot_size_A, bid, sl, tp)
-                self.last_signal_time_A = m5_live['time']
+        X = pd.DataFrame([feature_data])[feature_cols]
 
-        # === 執行模型 B (勝率極大化) ===
-        # 配置: Threshold=0.65, TP=5.0, SL=8.0
-        if pos_B_count == 0 and self.last_signal_time_B != m5_live['time']:
-            if model_B_buy_score >= 0.65 and model_B_buy_score > model_B_sell_score:
-                sl, tp = ask - 8.0, ask + 5.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_BUY, self.lot_size_B, ask, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
-                if res is not None:
-                    logger.info(f"🎯 [模型 B - 勝率引擎] 多單進場 @ {ask:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_B_buy_score*100:.1f}% | Ticket: {res.order}")
-                    if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "BUY", self.lot_size_B, ask, sl, tp)
-                self.last_signal_time_B = m5_live['time']
-                
-            elif model_B_sell_score >= 0.65 and model_B_sell_score > model_B_buy_score:
-                sl, tp = bid + 8.0, bid - 5.0
-                res = self.executor.send_order(self.symbol, mt5.ORDER_TYPE_SELL, self.lot_size_B, bid, sl, tp, comment="Model_B_Mix", magic=self.magic_number_B)
-                if res is not None:
-                    logger.info(f"🎯 [模型 B - 勝率引擎] 空單進場 @ {bid:.2f} | SL: {sl:.2f} | TP: {tp:.2f} | 信心: {model_B_sell_score*100:.1f}% | Ticket: {res.order}")
-                    if self.trade_tracker:
-                        self.trade_tracker.log_open_trade(res.order, "Model_B_Mix", "SELL", self.lot_size_B, bid, sl, tp)
-                self.last_signal_time_B = m5_live['time']
-        
-        # 每 10 個 tick 更新一次 CSV 紀錄
-        self.tick_counter += 1
-        if self.tick_counter % 10 == 0 and self.trade_tracker:
-            self.trade_tracker.update_closed_trades(self.connector)
+        # ── 波動過濾器：依 PPT 階段分開判斷 ────────────────────────────────
+        # 4-2 / 4-1 階 → 順勢交易，斜率陡反而是進場動力，不受波動過濾限制
+        # 2 / 3 階    → 盤整/逆勢，斜率太陡代表行情不對，擋下
+        # stage=0     → 無訊號，直接擋
+        # ─────────────────────────────────────────────────────────────────
+        trend_stages = {42, 41}   # 順勢階段：不受 BB 斜率限制
+        calm_stages  = {2, 3}     # 盤整/逆勢階段：斜率過大時擋下
+
+        # BB 中軌斜率計算（每根平均位移量）
+        bb_mavg_series = m5_close.rolling(21).mean()
+        if len(bb_mavg_series) >= 6:
+            self.bb_slope = float(bb_mavg_series.iloc[-1] - bb_mavg_series.iloc[-6]) / 5.0
+        else:
+            self.bb_slope = 0.0
+
+        slope_blocked = abs(self.bb_slope) > self.BB_SLOPE_LIMIT
+
+        if stage in trend_stages:
+            # 4-2 / 4-1：順勢，完全放行，不管斜率
+            self.filter_blocked = False
+        elif stage in calm_stages and slope_blocked:
+            # 2 / 3 階遇到爆發行情：封鎖
+            self.filter_blocked = True
+            self.conf_buy  = 0.0
+            self.conf_sell = 0.0
+            logger.debug(
+                f"⚡ 波動過濾（{stage}階）| BB斜率={self.bb_slope:+.3f} > ±{self.BB_SLOPE_LIMIT} | 略過"
+            )
+            return
+        else:
+            self.filter_blocked = False
+
+
+        # ── AI 信心率預測：多/空單在固定 TP=5/SL=5 條件下的獲勝機率 ────────
+        self.conf_buy  = self.models['win_b'].predict_proba(X)[0, 1]
+        self.conf_sell = self.models['win_s'].predict_proba(X)[0, 1]
+
+        # ── 嚴格 PPT 過濾 ──────────────────────────────────────────────────
+        if getattr(self, 'PPT_STRICT_MODE', True):
+            if stage == 0:
+                self.conf_buy = 0.0
+                self.conf_sell = 0.0
+                self.filter_blocked = True
+            else:
+                # 只有符合 PPT 方向才保留信心率
+                if signal_dir == 1:
+                    self.conf_sell = 0.0
+                elif signal_dir == -1:
+                    self.conf_buy = 0.0
+
+        # UI 展示
+        self.model_buy_prob  = self.conf_buy
+        self.model_sell_prob = self.conf_sell
+
+        # ── 下單決策：信心率 >= 65% 才進場 ──────────────────────────────────
+        can_buy  = self.conf_buy  >= self.THRESHOLD
+        can_sell = self.conf_sell >= self.THRESHOLD
+
+        if can_buy and can_sell:
+            if self.conf_buy >= self.conf_sell:
+                self.open_position(mt5.ORDER_TYPE_BUY,  "AI_Buy")
+            else:
+                self.open_position(mt5.ORDER_TYPE_SELL, "AI_Sell")
+        elif can_buy:
+            self.open_position(mt5.ORDER_TYPE_BUY,  "AI_Buy")
+        elif can_sell:
+            self.open_position(mt5.ORDER_TYPE_SELL, "AI_Sell")
+
+
+    def open_position(self, order_type, comment):
+        """以固定 TP=5 / SL=5 掛單到 MT5"""
+        if self.has_open_position(self.magic_number): return
+        tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None: return
+        price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+        tp = price + self.FIXED_TP if order_type == mt5.ORDER_TYPE_BUY else price - self.FIXED_TP
+        sl = price - self.FIXED_SL if order_type == mt5.ORDER_TYPE_BUY else price + self.FIXED_SL
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol,
+            "volume": self.lot_size, "type": order_type,
+            "price": price, "sl": sl, "tp": tp,
+            "magic": self.magic_number, "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        res = mt5.order_send(request)
+        if res.retcode == mt5.TRADE_RETCODE_DONE:
+            direction = '多' if order_type == mt5.ORDER_TYPE_BUY else '空'
+            conf      = self.conf_buy if order_type == mt5.ORDER_TYPE_BUY else self.conf_sell
+            logger.info(f"🚀 [{comment}] 進場成功 | {direction}單 | 信心率: {conf*100:.1f}% | 價: {price:.2f} | TP: {tp:.2f} | SL: {sl:.2f}")
+            if self.trade_tracker:
+                try:
+                    self.trade_tracker.log_open_trade(
+                        ticket=res.order, model_name=comment,
+                        order_type="BUY" if order_type == mt5.ORDER_TYPE_BUY else "SELL",
+                        lots=self.lot_size, open_price=price, sl=sl, tp=tp
+                    )
+                except Exception as e:
+                    logger.error(f"⚠️ 交易記錄寫入失敗: {e}")
+        else:
+            logger.error(f"❌ [{comment}] 進場失敗 | MT5 錯誤碼: {res.retcode} | {res.comment}")
+
+
+    def has_open_position(self, magic):
+        pos = mt5.positions_get(symbol=self.symbol)
+        if pos:
+            for p in pos:
+                if p.magic == magic: return True
+        return False

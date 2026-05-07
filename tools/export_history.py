@@ -52,11 +52,13 @@ def export_data(symbol="XAUUSD", timeframe=mt5.TIMEFRAME_M5, tf_name="M5", month
     df = pd.DataFrame(rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     
-    # 確保目錄存在
-    os.makedirs('history_data', exist_ok=True)
+    # 自動偵測路徑：定位到 gold/ 下的 history_data
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    history_dir = os.path.join(base_dir, 'history_data')
+    os.makedirs(history_dir, exist_ok=True)
     
     # 儲存到 CSV
-    filename = f"history_data/{symbol}_{tf_name}.csv"
+    filename = os.path.join(history_dir, f"{symbol}_{tf_name}.csv")
     df.to_csv(filename, index=False)
     
     logging.info(f"✅ 成功匯出 {len(df)} 筆資料到 {filename}")

@@ -1,11 +1,13 @@
 import MetaTrader5 as mt5
 import pandas as pd
+import os
 from datetime import datetime
 
 mt5.initialize()
 
-import os
-csv_path = r'C:\Users\user\Documents\projects\trade_records.csv'
+# 自動偵測路徑：假設在 gold/tools/ 執行，則往上一層找
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+csv_path = os.path.join(base_dir, 'trade_records.csv')
 df = pd.read_csv(csv_path)
 df['Close_Time'] = df['Close_Time'].astype(object)
 df['Outcome'] = df['Outcome'].astype(object)

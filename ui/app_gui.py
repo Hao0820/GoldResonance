@@ -60,7 +60,7 @@ class TradingApp(tk.Tk):
         self.engine  = engine
         self.running = False
 
-        self.title("⚔️  Iron Wall  |  AI 黃金策略中心")
+        self.title("⚔️  Iron Wall  |  專家規則黃金交易系統")
         self.geometry("1100x720")
         self.minsize(900, 620)
         self.configure(bg=self.BG_DARK)
@@ -130,9 +130,6 @@ class TradingApp(tk.Tk):
         self.btn_stop = ttk.Button(toolbar, text="⏹ 停止", command=self.on_stop, state=tk.DISABLED)
         self.btn_stop.pack(side=tk.LEFT, padx=4)
 
-        self.btn_retrain = ttk.Button(toolbar, text="🔄 重訓模型", command=self.on_retrain)
-        self.btn_retrain.pack(side=tk.LEFT, padx=4)
-
         # Lot size
         ttk.Label(toolbar, text="手數:", foreground=self.FG_SUB).pack(side=tk.LEFT, padx=(20, 4))
         self.ent_lots = self._entry(toolbar, width=6, color=self.GREEN)
@@ -179,11 +176,11 @@ class TradingApp(tk.Tk):
         self.lbl_profit     = self._card_val(c2, "未實現",   "$0.00", self.FG_MAIN)
         self.lbl_win_loss   = self._card_val(c2, "今日 W/L", "0W / 0L", self.FG_MAIN)
 
-        # Card 3 — AI Signal
-        c3 = self._card(dash, "🧠 AI 信心率")
+        # Card 3 — Signal Strength
+        c3 = self._card(dash, "⚡ 訊號強度")
         c3.grid(row=0, column=2, sticky="nsew", padx=3)
-        self.lbl_conf_buy   = self._card_val(c3, "多單信心", "--.-%",  self.FG_MAIN)
-        self.lbl_conf_sell  = self._card_val(c3, "空單信心", "--.-%",  self.FG_MAIN)
+        self.lbl_conf_buy   = self._card_val(c3, "多單強度", "✗",  self.FG_MAIN)
+        self.lbl_conf_sell  = self._card_val(c3, "空單強度", "✗",  self.FG_MAIN)
         self.lbl_bb_slope   = self._card_val(c3, "BB斜率",   "-- pts/bar", self.FG_MAIN)
 
         # Card 4 — PPT Status
@@ -352,32 +349,6 @@ class TradingApp(tk.Tk):
         self.btn_stop.config(state=tk.DISABLED)
         self.lbl_ea_status.config(text="EA 狀態: ⏸ 已停止", fg=self.YELLOW)
 
-    def on_retrain(self):
-        self.btn_retrain.config(state=tk.DISABLED, text="⏳ 重訓中...")
-        was_running = self.running
-        if was_running:
-            self.on_stop()
-            logging.info("EA 已暫停，開始 AI 模型重訓流程...")
-        else:
-            logging.info("開始 AI 模型重訓流程，這可能需要數分鐘...")
-        threading.Thread(target=self._retrain_task, args=(was_running,), daemon=True).start()
-
-    def _retrain_task(self, restart_after=False):
-        try:
-            from ml_engine.evolve_brain import evolve
-            evolve()
-            for strat in self.engine.strategies:
-                if hasattr(strat, 'reload_models'):
-                    strat.reload_models()
-            self.after(0, lambda: logging.info("✅ 模型重訓並重載完成！最新大腦已上線。"))
-            if restart_after:
-                self.after(500,  self.on_connect)
-                self.after(3000, self.on_start)
-        except Exception as e:
-            err = str(e)
-            self.after(0, lambda m=err: logging.error(f"重訓失敗: {m}"))
-        finally:
-            self.after(0, lambda: self.btn_retrain.config(state=tk.NORMAL, text="🔄 重訓模型"))
 
     def on_closing(self):
         self.running = False
@@ -418,20 +389,22 @@ class TradingApp(tk.Tk):
                 wl_color = self.GREEN if w > l else (self.RED if l > w else self.FG_MAIN)
                 self.lbl_win_loss.config(text=f"{w}W / {l}L", fg=wl_color)
 
-            # ── AI + PPT ─────────────────────────────────────────────────────
+            # ── Expert Signal + PPT ──────────────────────────────────────────────
             if self.engine.strategies:
                 strat = self.engine.strategies[0]
 
-                # Confidence
-                cb    = getattr(strat, 'conf_buy',  0.0) * 100
-                cs    = getattr(strat, 'conf_sell', 0.0) * 100
+                # Signal strength (now binary 0 or 1)
+                cb    = getattr(strat, 'conf_buy',  0.0)
+                cs    = getattr(strat, 'conf_sell', 0.0)
                 slope = getattr(strat, 'bb_slope',  0.0)
                 limit = getattr(strat, 'BB_SLOPE_LIMIT', 3.0)
 
-                buy_color  = self.GREEN  if cb >= 65 else (self.YELLOW if cb >= 50 else self.FG_MAIN)
-                sell_color = self.GREEN  if cs >= 65 else (self.YELLOW if cs >= 50 else self.FG_MAIN)
-                self.lbl_conf_buy.config(text=f"{cb:5.1f}%",  fg=buy_color)
-                self.lbl_conf_sell.config(text=f"{cs:5.1f}%", fg=sell_color)
+                buy_text   = "✓ 強" if cb > 0.5 else "✗"
+                sell_text  = "✓ 強" if cs > 0.5 else "✗"
+                buy_color  = self.GREEN if cb > 0.5 else self.FG_MAIN
+                sell_color = self.GREEN if cs > 0.5 else self.FG_MAIN
+                self.lbl_conf_buy.config(text=buy_text,  fg=buy_color)
+                self.lbl_conf_sell.config(text=sell_text, fg=sell_color)
 
                 pct = min(abs(slope) / limit * 100, 100) if limit else 0
                 slope_color = self.RED if pct >= 100 else (self.YELLOW if pct >= 70 else self.TEAL)

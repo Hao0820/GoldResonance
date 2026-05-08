@@ -1,7 +1,7 @@
 import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
-import joblib
+
 import os
 import time
 import logging
@@ -24,7 +24,7 @@ class MLResonanceStrategy(BaseStrategy):
 
         # --- 策略參數 ---
         self.magic_number = 88001
-        self.status = "AI 信心率大腦載入中..."
+        self.status = "專家規則載入中..."
         self.FIXED_TP  = 5.0   # 止盈：5 點（與訓練標籤一致）
         self.FIXED_SL  = 5.0   # 止損：5 點
         self.THRESHOLD = 0.65  # 信心率門檻
@@ -48,25 +48,8 @@ class MLResonanceStrategy(BaseStrategy):
         self.today_losses     = 0     # 今日虧損筆數
         self.last_signal_time = None  # 上次觸發訊號時間（字串）
 
-        self.models_loaded = False
-        self._load_models()
-
-    def _load_models(self):
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        models_dir = os.path.join(base_dir, "ml_engine", "models")
-        try:
-            self.models = {
-                'win_b': joblib.load(os.path.join(models_dir, 'win_buy.pkl')),
-                'win_s': joblib.load(os.path.join(models_dir, 'win_sell.pkl')),
-            }
-            self.status = "AI 信心率大腦就緒 (TP=5 / SL=5)"
-            self.models_loaded = True
-            logger.info("✅ 成功載入信心率大腦 win_buy.pkl / win_sell.pkl")
-        except Exception as e:
-            self.status = f"模型載入失敗: {e}"
-            logger.error(f"❌ 模型載入失敗: {e}")
-            self.models_loaded = False
-
+        self.models_loaded = True
+        self.status = "專家規則就緒 (已移除 ML 模型，使用專家規則)"
 
     def on_tick(self):
         """每秒被引擎驅動一次：計算 44 維特徵 → AI 預測 TP/SL → 決策下單"""
@@ -314,9 +297,20 @@ class MLResonanceStrategy(BaseStrategy):
             self.filter_blocked = False
 
 
-        # ── AI 信心率預測：多/空單在固定 TP=5/SL=5 條件下的獲勝機率 ────────
-        self.conf_buy  = self.models['win_b'].predict_proba(X)[0, 1]
-        self.conf_sell = self.models['win_s'].predict_proba(X)[0, 1]
+        # ── 專家規則信心率：根據 PPT 階段與過濾條件給出二元信心率（1.0 或 0.0）
+        if self.filter_blocked or stage == 0:
+            self.conf_buy = 0.0
+            self.conf_sell = 0.0
+        else:
+            if signal_dir == 1:
+                self.conf_buy = 1.0
+                self.conf_sell = 0.0
+            elif signal_dir == -1:
+                self.conf_buy = 0.0
+                self.conf_sell = 1.0
+            else:
+                self.conf_buy = 0.0
+                self.conf_sell = 0.0
 
         # ── 嚴格 PPT 過濾 ──────────────────────────────────────────────────
         if getattr(self, 'PPT_STRICT_MODE', True):
@@ -341,13 +335,13 @@ class MLResonanceStrategy(BaseStrategy):
 
         if can_buy and can_sell:
             if self.conf_buy >= self.conf_sell:
-                self.open_position(mt5.ORDER_TYPE_BUY,  "AI_Buy")
+                self.open_position(mt5.ORDER_TYPE_BUY,  "Expert_Buy")
             else:
-                self.open_position(mt5.ORDER_TYPE_SELL, "AI_Sell")
+                self.open_position(mt5.ORDER_TYPE_SELL, "Expert_Sell")
         elif can_buy:
-            self.open_position(mt5.ORDER_TYPE_BUY,  "AI_Buy")
+            self.open_position(mt5.ORDER_TYPE_BUY,  "Expert_Buy")
         elif can_sell:
-            self.open_position(mt5.ORDER_TYPE_SELL, "AI_Sell")
+            self.open_position(mt5.ORDER_TYPE_SELL, "Expert_Sell")
 
 
     def open_position(self, order_type, comment):
